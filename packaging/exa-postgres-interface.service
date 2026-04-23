@@ -1,0 +1,18 @@
+[Unit]
+Description=Exasol PostgreSQL wire-protocol interface
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=exa-postgres-interface
+Group=exa-postgres-interface
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/exa-postgres-interface/bin/exa-postgres-interface --config /etc/exa-postgres-interface/config.toml
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

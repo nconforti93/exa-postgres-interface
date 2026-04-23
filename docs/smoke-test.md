@@ -1,0 +1,85 @@
+# Smoke Test
+
+## Prepare Sample Data
+
+```bash
+scripts/setup_sample_data.sh
+```
+
+The script uses `EXAPUMP_PROFILE=nc-personal-2` unless overridden.
+That profile must be configured with TLS enabled because the Exasol Personal
+endpoint rejects plaintext database connections.
+
+## Install SQL Preprocessor
+
+```bash
+exapump sql --profile nc-personal-2 < sql/exasol_sql_preprocessor.sql
+```
+
+The gateway activates the installed preprocessor for each Exasol session using
+the configured `translation.session_init_sql` statement.
+
+## Start The Gateway
+
+```bash
+cp config/example.toml config/local.toml
+exa-postgres-interface --config config/local.toml
+```
+
+Set `exasol.dsn` and the preprocessor activation SQL for the target Exasol
+Personal instance before starting the service.
+
+## Connect DbVisualizer
+
+Use the PostgreSQL connector:
+
+* Host: gateway host
+* Port: configured `server.listen_port`
+* Database: any value accepted by the client UI
+* User/password: Exasol credentials
+
+## Basic Query
+
+```sql
+SELECT 1;
+```
+
+Expected result:
+
+```text
+1
+```
+
+## Dialect Conversion Query
+
+For direct `exapump` verification, activate the preprocessor in the same session:
+
+```sql
+ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = pg_demo.pg_sql_preprocessor;
+```
+
+```sql
+SELECT
+  order_id,
+  order_ts::DATE AS order_date,
+  amount::DECIMAL(18, 2) AS amount_eur
+FROM pg_demo.orders
+WHERE customer_name ILIKE 'acme%'
+ORDER BY order_id
+LIMIT 3;
+```
+
+Expected result shape:
+
+```text
+order_id | order_date | amount_eur
+```
+
+Expected rows are the first three Acme-prefixed sample orders ordered by
+`order_id`.
+
+Current `sqlglot` translation for the casts is not enough by itself because it
+leaves PostgreSQL `ILIKE` unchanged for Exasol. The database-side preprocessor
+script adds a targeted rewrite from `x ILIKE 'pattern'` to
+`UPPER(x) LIKE UPPER('pattern')` for this demo scope. This translation is not
+performed by the gateway application.

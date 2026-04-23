@@ -1,0 +1,19 @@
+[server]
+listen_host = "127.0.0.1"
+listen_port = 15432
+log_level = "INFO"
+
+[exasol]
+dsn = "example-host.example.com:8563"
+encryption = true
+pass_client_credentials = true
+schema = ""
+
+[translation]
+enabled = true
+sql_preprocessor_script = "PG_DEMO.PG_SQL_PREPROCESSOR"
+session_init_sql = [
+  # Keep deployment-specific script names here rather than in source code.
+  # The server expands {script} with sql_preprocessor_script.
+  "ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = {script}"
+]

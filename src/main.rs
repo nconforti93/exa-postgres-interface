@@ -1,5 +1,6 @@
 mod config;
 mod exasol;
+mod metadata;
 mod pg_server;
 mod policy;
 

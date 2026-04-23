@@ -20,12 +20,18 @@ provides:
 * Local compatibility responses for initial PostgreSQL catalog probes including
   `pg_catalog.pg_database`, `pg_catalog.pg_namespace`, `pg_catalog.pg_roles`,
   and `pg_catalog.pg_settings`.
+* Exasol-backed PostgreSQL metadata compatibility for the common JDBC and
+  DbVisualizer browse paths including `pg_namespace`, JDBC `getTables()`,
+  JDBC `getColumns()`, `pg_tables`, `information_schema.tables`,
+  `information_schema.columns`, `pg_user`, `pg_group`, `pg_stat_activity`,
+  and `pg_locks`.
 * Read-only statement policy separated from Exasol execution.
 * Local compatibility handling for common PostgreSQL client session commands and
   transaction wrappers.
 * Multi-statement Simple Query splitting, with execution stopped after the first
   error response.
-* Explicit rejection for DML, DDL, prepared statement parameters, and
+* Text prepared statement parameters for the Extended Query path.
+* Explicit rejection for DML, DDL, binary prepared statement parameters, and
   multi-statement Extended Query Parse payloads.
 
 SQL dialect translation remains inside Exasol through
@@ -44,9 +50,12 @@ external application.
 * `src/config.rs`
 * `src/exasol.rs`
 * `src/main.rs`
+* `src/metadata.rs`
 * `src/pg_server.rs`
 * `src/policy.rs`
 * `tests/jdbc/PgJdbcSmoke.java`
+* `tests/jdbc/PgJdbcMetaSmoke.java`
+* `docs/postgres-metadata-compatibility.md`
 * `specs/mission.md`
 * `specs/_plans/add-read-only-postgres-interface/implementation-notes.md`
 * `specs/_plans/add-read-only-postgres-interface/protocol/read-only-query-path/spec.md`
@@ -60,7 +69,7 @@ repository has one active implementation path.
   Rust toolchain.
 * `cargo fmt` passed.
 * `cargo fmt --check` passed.
-* `cargo test` passed: 12 tests.
+* `cargo test` passed: 16 tests.
 * `cargo build --release` passed.
 * `git diff --check` passed.
 * `exapump sql --profile nc-personal-2 "SELECT 1"` passed and returned `1`.
@@ -83,6 +92,18 @@ repository has one active implementation path.
   `pg_catalog.pg_database` query, reporting `OK columns=1 rows=1`.
 * PostgreSQL JDBC through the gateway passed `PreparedStatement` execution for
   the PostgreSQL-flavored sample query, reporting `OK columns=3 rows=3`.
+* PostgreSQL JDBC metadata through the gateway passed
+  `DatabaseMetaData.getCatalogs()`, `getSchemas()`, `getTables()`, and
+  `getColumns()`, returning real Exasol-backed schema, table, and column
+  metadata.
+* DbVisualizer-profile metadata queries through the gateway passed:
+  `select * from pg_tables where schemaname != 'pg_catalog'`,
+  `select TABLE_NAME from INFORMATION_SCHEMA.TABLES ...`,
+  `select COLUMN_NAME from INFORMATION_SCHEMA.COLUMNS ...`,
+  `select * from pg_user`,
+  `select * from pg_group`,
+  `select * from pg_stat_activity`, and
+  `select * from pg_locks`.
 
 Earlier live database checks from this plan remain valid:
 
@@ -116,16 +137,20 @@ Covered by build/manual verification:
   query protocol and receives field metadata before result tuples.
 * Initial PostgreSQL database metadata probes map the single Exasol database
   concept to the PostgreSQL database name `exasol`.
+* Schema and object metadata probes map Exasol metadata system tables into the
+  PostgreSQL and DbVisualizer query shapes documented in
+  `docs/postgres-metadata-compatibility.md`.
 
 ## Known Gaps and Follow-Up Work
 
-* Manual DbVisualizer smoke testing through the Rust gateway still needs to be
-  run with user-supplied Exasol credentials.
-* PostgreSQL system catalog and metadata compatibility for browsing are not
-  implemented.
-* Prepared statement parameters are not implemented.
+* Manual end-to-end DbVisualizer UI browsing still needs to be rerun against
+  the latest binary, even though the underlying profile SQL now passes.
+* PostgreSQL system catalog emulation is still targeted to the currently
+  observed JDBC and DbVisualizer queries; it is not a general-purpose
+  PostgreSQL catalog implementation.
+* Binary prepared statement parameters are not implemented.
 * Extended Query describe responses do not infer result schema before execution.
 * Transaction wrappers are client compatibility acknowledgements, not
   Exasol-backed PostgreSQL transaction semantics.
-* Column values are currently returned as PostgreSQL text fields for broad
-  client compatibility; richer type mapping is future work.
+* Query result values are currently returned as PostgreSQL text fields for broad
+  client compatibility; richer row-value type mapping is future work.

@@ -111,6 +111,55 @@ OK columns=1 rows=1
 OK columns=3 rows=3
 ```
 
+## Optional JDBC Metadata Smoke Test
+
+The repository also includes a metadata-focused JDBC smoke client that exercises
+`DatabaseMetaData.getCatalogs()`, `getSchemas()`, `getTables()`, and
+`getColumns()` against the gateway.
+
+```bash
+javac -cp /tmp/postgresql.jar tests/jdbc/PgJdbcMetaSmoke.java
+java -cp /tmp/postgresql.jar:tests/jdbc PgJdbcMetaSmoke \
+  'jdbc:postgresql://127.0.0.1:15432/exasol?preferQueryMode=extended' \
+  sys \
+  'EXASOL_PASSWORD'
+```
+
+The expected shape is:
+
+```text
+-- catalogs cols=1
+TABLE_CAT=exasol
+-- schemas cols=2
+TABLE_SCHEM=...
+TABLE_CATALOG=exasol
+-- tables cols=10
+TABLE_CAT=exasol
+TABLE_SCHEM=...
+TABLE_NAME=...
+-- columns cols=24
+TABLE_CAT=exasol
+TABLE_SCHEM=...
+TABLE_NAME=...
+COLUMN_NAME=...
+```
+
+## Optional DbVisualizer Query Smoke Test
+
+The PostgreSQL profile shipped with DbVisualizer issues these metadata queries
+during browsing. Run them through `psql` or another PostgreSQL client to verify
+the gateway path that DbVisualizer uses:
+
+```sql
+select * from pg_tables where schemaname != 'pg_catalog';
+select TABLE_NAME from INFORMATION_SCHEMA.TABLES where TABLE_CATALOG = 'exasol' and TABLE_SCHEMA = 'PG_DEMO' order by TABLE_NAME;
+select COLUMN_NAME from INFORMATION_SCHEMA.COLUMNS where TABLE_CATALOG = 'exasol' and TABLE_SCHEMA = 'PG_DEMO' and TABLE_NAME = 'ORDERS' order by COLUMN_NAME;
+select * from pg_user;
+select * from pg_group;
+select * from pg_stat_activity;
+select * from pg_locks;
+```
+
 ## Basic Query
 
 ```sql

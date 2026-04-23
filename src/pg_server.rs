@@ -32,6 +32,7 @@ use tracing::{debug, warn};
 
 use crate::config::AppConfig;
 use crate::exasol::{ExasolError, ExasolResult, ExasolSession};
+use crate::metadata::{MetadataPlan, detect as detect_metadata, map_exasol_column_type};
 use crate::policy::{StatementPlan, classify_statement};
 
 struct SessionState {
@@ -134,6 +135,10 @@ impl ExasolPgWireHandler {
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
+        debug!(sql = %sql, "handling PostgreSQL statement");
+        if let Some(response) = self.execute_metadata_query(client, sql).await? {
+            return Ok(vec![response]);
+        }
         match classify_statement(sql) {
             StatementPlan::Empty => Ok(vec![GatewayResponse::Empty]),
             StatementPlan::ClientSet => Ok(vec![GatewayResponse::Execution {
@@ -180,6 +185,374 @@ impl ExasolPgWireHandler {
                 map_exasol_result(result)
             }
         }
+    }
+
+    async fn execute_metadata_query<C>(
+        &self,
+        client: &mut C,
+        sql: &str,
+    ) -> PgWireResult<Option<GatewayResponse>>
+    where
+        C: ClientInfo + ClientPortalStore + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
+        C::PortalStore: PortalStore,
+        C::Error: Debug,
+        PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
+    {
+        let Some(plan) = detect_metadata(sql) else {
+            return Ok(None);
+        };
+
+        let response = match plan {
+            MetadataPlan::JdbcSchemas => {
+                let mut schemas = self
+                    .fetch_query_rows(
+                        client,
+                        "SELECT SCHEMA_NAME FROM SYS.EXA_SCHEMAS ORDER BY SCHEMA_NAME",
+                    )
+                    .await?;
+                schemas.push(vec![Some("information_schema".to_owned())]);
+                schemas.push(vec![Some("pg_catalog".to_owned())]);
+                schemas.sort();
+                GatewayResponse::Query {
+                    columns: vec!["TABLE_SCHEM".to_owned(), "TABLE_CATALOG".to_owned()],
+                    rows: schemas
+                        .into_iter()
+                        .map(|row| vec![row.first().cloned().unwrap_or(None), Some("exasol".to_owned())])
+                        .collect(),
+                }
+            }
+            MetadataPlan::PgNamespace => {
+                let mut schemas = self
+                    .fetch_query_rows(
+                        client,
+                        "SELECT SCHEMA_NAME FROM SYS.EXA_SCHEMAS ORDER BY SCHEMA_NAME",
+                    )
+                    .await?;
+                schemas.push(vec![Some("information_schema".to_owned())]);
+                schemas.push(vec![Some("pg_catalog".to_owned())]);
+                schemas.sort();
+                GatewayResponse::Query {
+                    columns: vec![
+                        "oid".to_owned(),
+                        "nspname".to_owned(),
+                        "nspowner".to_owned(),
+                        "nspacl".to_owned(),
+                    ],
+                    rows: schemas
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, row)| {
+                            vec![
+                                Some((2200 + idx as i32).to_string()),
+                                row.first().cloned().unwrap_or(None),
+                                Some("10".to_owned()),
+                                None,
+                            ]
+                        })
+                        .collect(),
+                }
+            }
+            MetadataPlan::JdbcTables {
+                schema_pattern,
+                table_pattern,
+            } => self
+                .execute_exasol_query(
+                    client,
+                    &format!(
+                        "SELECT \
+                            'exasol' AS \"TABLE_CAT\", \
+                            object_schema AS \"TABLE_SCHEM\", \
+                            object_name AS \"TABLE_NAME\", \
+                            object_type AS \"TABLE_TYPE\", \
+                            remarks AS \"REMARKS\", \
+                            '' AS \"TYPE_CAT\", \
+                            '' AS \"TYPE_SCHEM\", \
+                            '' AS \"TYPE_NAME\", \
+                            '' AS \"SELF_REFERENCING_COL_NAME\", \
+                            '' AS \"REF_GENERATION\" \
+                         FROM ( \
+                            SELECT TABLE_SCHEMA AS object_schema, TABLE_NAME AS object_name, 'TABLE' AS object_type, COALESCE(TABLE_COMMENT, '') AS remarks \
+                            FROM SYS.EXA_ALL_TABLES \
+                            UNION ALL \
+                            SELECT VIEW_SCHEMA AS object_schema, VIEW_NAME AS object_name, 'VIEW' AS object_type, COALESCE(VIEW_COMMENT, '') AS remarks \
+                            FROM SYS.EXA_ALL_VIEWS \
+                         ) objects \
+                         WHERE object_schema LIKE {schema_pattern} AND object_name LIKE {table_pattern} \
+                         ORDER BY \"TABLE_TYPE\", \"TABLE_SCHEM\", \"TABLE_NAME\"",
+                        schema_pattern = sql_string_literal(&schema_pattern),
+                        table_pattern = sql_string_literal(&table_pattern),
+                    ),
+                )
+                .await?,
+            MetadataPlan::JdbcColumns {
+                schema_pattern,
+                table_pattern,
+                column_pattern,
+            } => {
+                let rows = self
+                    .fetch_query_rows(
+                        client,
+                        &format!(
+                            "SELECT COLUMN_SCHEMA, COLUMN_TABLE, COLUMN_NAME, COLUMN_TYPE, COLUMN_IS_NULLABLE, COLUMN_DEFAULT, COLUMN_COMMENT, COLUMN_ORDINAL_POSITION \
+                             FROM SYS.EXA_ALL_COLUMNS \
+                             WHERE COLUMN_OBJECT_TYPE IN ('TABLE', 'VIEW') \
+                               AND COLUMN_SCHEMA LIKE {schema_pattern} \
+                               AND COLUMN_TABLE LIKE {table_pattern} \
+                               AND COLUMN_NAME LIKE {column_pattern} \
+                             ORDER BY COLUMN_SCHEMA, COLUMN_TABLE, COLUMN_ORDINAL_POSITION",
+                            schema_pattern = sql_string_literal(&schema_pattern),
+                            table_pattern = sql_string_literal(&table_pattern),
+                            column_pattern = sql_string_literal(&column_pattern),
+                        ),
+                    )
+                    .await?;
+
+                GatewayResponse::Query {
+                    columns: vec![
+                        "current_database".to_owned(),
+                        "nspname".to_owned(),
+                        "relname".to_owned(),
+                        "attname".to_owned(),
+                        "atttypid".to_owned(),
+                        "attnotnull".to_owned(),
+                        "atttypmod".to_owned(),
+                        "attlen".to_owned(),
+                        "typtypmod".to_owned(),
+                        "attnum".to_owned(),
+                        "attidentity".to_owned(),
+                        "attgenerated".to_owned(),
+                        "adsrc".to_owned(),
+                        "description".to_owned(),
+                        "typbasetype".to_owned(),
+                        "typtype".to_owned(),
+                    ],
+                    rows: rows
+                        .into_iter()
+                        .map(|row| {
+                            let exa_type = row.get(3).and_then(|value| value.as_deref()).unwrap_or("VARCHAR(2000) UTF8");
+                            let type_info = map_exasol_column_type(exa_type);
+                            let nullable = row.get(4).and_then(|value| value.as_deref()) == Some("false");
+                            vec![
+                                Some("exasol".to_owned()),
+                                row.first().cloned().unwrap_or(None),
+                                row.get(1).cloned().unwrap_or(None),
+                                row.get(2).cloned().unwrap_or(None),
+                                Some(type_info.oid.to_string()),
+                                Some(if nullable { "true" } else { "false" }.to_owned()),
+                                Some(type_info.typmod.to_string()),
+                                Some(type_info.typlen.to_string()),
+                                Some(type_info.typmod.to_string()),
+                                row.get(7).cloned().unwrap_or(Some("0".to_owned())),
+                                None,
+                                None,
+                                row.get(5).cloned().unwrap_or(None),
+                                row.get(6).cloned().unwrap_or(None),
+                                Some(type_info.typbasetype.to_string()),
+                                Some(type_info.typtype.to_owned()),
+                            ]
+                        })
+                        .collect(),
+                }
+            }
+            MetadataPlan::PgTables {
+                schema_exclude,
+                table_name,
+            } => self
+                .execute_exasol_query(
+                    client,
+                    &format!(
+                        "SELECT \
+                            TABLE_SCHEMA AS schemaname, \
+                            TABLE_NAME AS tablename, \
+                            TABLE_OWNER AS tableowner, \
+                            '' AS tablespace, \
+                            false AS hasindexes, \
+                            false AS hasrules, \
+                            false AS hastriggers, \
+                            false AS rowsecurity \
+                         FROM SYS.EXA_ALL_TABLES \
+                         WHERE TABLE_SCHEMA != {schema_exclude} {table_filter} \
+                         ORDER BY schemaname, tablename",
+                        schema_exclude = sql_string_literal(schema_exclude.as_deref().unwrap_or("pg_catalog")),
+                        table_filter = table_name
+                            .map(|value| format!("AND TABLE_NAME = {}", sql_string_literal(&value)))
+                            .unwrap_or_default(),
+                    ),
+                )
+                .await?,
+            MetadataPlan::InfoSchemaTableNames { catalog, schema } => {
+                if !catalog.eq_ignore_ascii_case("exasol") {
+                    empty_query(vec!["TABLE_NAME"])
+                } else {
+                    self.execute_exasol_query(
+                        client,
+                        &format!(
+                            "SELECT TABLE_NAME \
+                             FROM ( \
+                                SELECT 'exasol' AS TABLE_CATALOG, TABLE_SCHEMA AS TABLE_SCHEMA, TABLE_NAME AS TABLE_NAME FROM SYS.EXA_ALL_TABLES \
+                                UNION ALL \
+                                SELECT 'exasol' AS TABLE_CATALOG, VIEW_SCHEMA AS TABLE_SCHEMA, VIEW_NAME AS TABLE_NAME FROM SYS.EXA_ALL_VIEWS \
+                             ) objects \
+                             WHERE TABLE_CATALOG = 'exasol' AND TABLE_SCHEMA = {schema} \
+                             ORDER BY TABLE_NAME",
+                            schema = sql_string_literal(&schema),
+                        ),
+                    )
+                    .await?
+                }
+            }
+            MetadataPlan::InfoSchemaColumnNames {
+                catalog,
+                schema,
+                table,
+            } => {
+                if !catalog.eq_ignore_ascii_case("exasol") {
+                    empty_query(vec!["COLUMN_NAME"])
+                } else {
+                    self.execute_exasol_query(
+                        client,
+                        &format!(
+                            "SELECT COLUMN_NAME \
+                             FROM SYS.EXA_ALL_COLUMNS \
+                             WHERE COLUMN_SCHEMA = {schema} AND COLUMN_TABLE = {table} \
+                             ORDER BY COLUMN_NAME",
+                            schema = sql_string_literal(&schema),
+                            table = sql_string_literal(&table),
+                        ),
+                    )
+                    .await?
+                }
+            }
+            MetadataPlan::PgUser => GatewayResponse::Query {
+                columns: vec![
+                    "usename".to_owned(),
+                    "usesysid".to_owned(),
+                    "usecreatedb".to_owned(),
+                    "usesuper".to_owned(),
+                    "userepl".to_owned(),
+                    "usebypassrls".to_owned(),
+                    "passwd".to_owned(),
+                    "valuntil".to_owned(),
+                    "useconfig".to_owned(),
+                ],
+                rows: vec![vec![
+                    Some("sys".to_owned()),
+                    Some("10".to_owned()),
+                    Some("true".to_owned()),
+                    Some("true".to_owned()),
+                    Some("false".to_owned()),
+                    Some("true".to_owned()),
+                    None,
+                    None,
+                    None,
+                ]],
+            },
+            MetadataPlan::PgGroup => empty_query(vec!["groname", "grosysid", "grolist"]),
+            MetadataPlan::PgStatActivity => empty_query(vec![
+                "datid",
+                "datname",
+                "pid",
+                "leader_pid",
+                "usesysid",
+                "usename",
+                "application_name",
+                "client_addr",
+                "client_hostname",
+                "client_port",
+                "backend_start",
+                "xact_start",
+                "query_start",
+                "state_change",
+                "wait_event_type",
+                "wait_event",
+                "state",
+                "backend_xid",
+                "backend_xmin",
+                "query_id",
+                "query",
+                "backend_type",
+            ]),
+            MetadataPlan::PgLocks => empty_query(vec![
+                "locktype",
+                "database",
+                "relation",
+                "page",
+                "tuple",
+                "virtualxid",
+                "transactionid",
+                "classid",
+                "objid",
+                "objsubid",
+                "virtualtransaction",
+                "pid",
+                "mode",
+                "granted",
+                "fastpath",
+                "waitstart",
+            ]),
+        };
+
+        Ok(Some(response))
+    }
+
+    async fn execute_exasol_query<C>(
+        &self,
+        client: &mut C,
+        sql: &str,
+    ) -> PgWireResult<GatewayResponse>
+    where
+        C: ClientInfo + ClientPortalStore + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
+        C::PortalStore: PortalStore,
+        C::Error: Debug,
+        PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
+    {
+        let result = self.execute_exasol_sql(client, sql).await?;
+        let mut responses = map_exasol_result(result)?;
+        Ok(responses.pop().unwrap_or(GatewayResponse::Empty))
+    }
+
+    async fn fetch_query_rows<C>(
+        &self,
+        client: &mut C,
+        sql: &str,
+    ) -> PgWireResult<Vec<Vec<Option<String>>>>
+    where
+        C: ClientInfo + ClientPortalStore + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
+        C::PortalStore: PortalStore,
+        C::Error: Debug,
+        PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
+    {
+        match self.execute_exasol_sql(client, sql).await? {
+            ExasolResult::ResultSet { rows, .. } => Ok(rows),
+            ExasolResult::RowCount(_) => Err(pg_error(
+                "XX000",
+                "metadata query unexpectedly returned a row count",
+            )),
+        }
+    }
+
+    async fn execute_exasol_sql<C>(&self, client: &mut C, sql: &str) -> PgWireResult<ExasolResult>
+    where
+        C: ClientInfo + ClientPortalStore + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
+        C::PortalStore: PortalStore,
+        C::Error: Debug,
+        PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
+    {
+        let state = client
+            .session_extensions()
+            .get::<SessionState>()
+            .ok_or_else(|| pg_error("08003", "Exasol session is not connected"))?;
+        let sql = sql.to_owned();
+        task::spawn_blocking(move || {
+            let mut session = state
+                .exasol
+                .lock()
+                .map_err(|_| ExasolError::Connection("Exasol session lock poisoned".to_owned()))?;
+            session.execute(&sql)
+        })
+        .await
+        .map_err(|err| pg_error("58000", format!("Exasol execution task failed: {err}")))?
+        .map_err(map_exasol_execution_error)
     }
 
     async fn execute_simple_query<C>(
@@ -376,16 +749,8 @@ impl ExtendedQueryHandler for ExasolPgWireHandler {
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
-        if target.parameter_len() > 0 {
-            return Err(pg_error(
-                "0A000",
-                "prepared statement parameters are not implemented",
-            ));
-        }
-
-        let mut responses = self
-            .execute_statement(client, &target.statement.statement)
-            .await?;
+        let sql = render_portal_sql(target)?;
+        let mut responses = self.execute_statement(client, &sql).await?;
         let response = responses.pop().unwrap_or(GatewayResponse::Empty);
         let fields = response.fields();
         cache_extended_result(client, &target.name, response)?;
@@ -404,17 +769,11 @@ impl ExtendedQueryHandler for ExasolPgWireHandler {
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
-        if portal.parameter_len() > 0 {
-            return Ok(Response::Error(Box::new(ErrorInfo::new(
-                "ERROR".to_owned(),
-                "0A000".to_owned(),
-                "prepared statement parameters are not implemented".to_owned(),
-            ))));
-        }
-
-        let mut responses = self
-            .execute_statement(client, &portal.statement.statement)
-            .await?;
+        let sql = match render_portal_sql(portal) {
+            Ok(sql) => sql,
+            Err(error) => return Ok(Response::Error(Box::new(error_info(error)))),
+        };
+        let mut responses = self.execute_statement(client, &sql).await?;
         Response::try_from(responses.pop().unwrap_or(GatewayResponse::Empty))
     }
 }
@@ -575,6 +934,56 @@ where
         .lock()
         .map_err(|_| pg_error("58000", "extended result cache lock poisoned"))?;
     Ok(cache.remove(portal_name))
+}
+
+fn render_portal_sql(portal: &Portal<String>) -> PgWireResult<String> {
+    let mut sql = portal.statement.statement.clone();
+    for idx in (0..portal.parameter_len()).rev() {
+        let placeholder = format!("${}", idx + 1);
+        let value = render_portal_parameter(portal, idx)?;
+        sql = sql.replace(&placeholder, &value);
+    }
+    Ok(sql)
+}
+
+fn render_portal_parameter(portal: &Portal<String>, idx: usize) -> PgWireResult<String> {
+    let value = portal
+        .parameters
+        .get(idx)
+        .ok_or_else(|| pg_error("08P01", format!("missing portal parameter {}", idx + 1)))?;
+
+    let Some(bytes) = value else {
+        return Ok("NULL".to_owned());
+    };
+
+    if portal.parameter_format.is_binary(idx) {
+        return Err(pg_error(
+            "0A000",
+            "binary prepared statement parameters are not implemented",
+        ));
+    }
+
+    let text = String::from_utf8(bytes.to_vec())
+        .map_err(|err| pg_error("08P01", format!("invalid UTF-8 parameter: {err}")))?;
+    Ok(sql_string_literal(&text))
+}
+
+fn sql_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn error_info(error: PgWireError) -> ErrorInfo {
+    match error {
+        PgWireError::UserError(info) => *info,
+        other => ErrorInfo::new("ERROR".to_owned(), "XX000".to_owned(), other.to_string()),
+    }
+}
+
+fn empty_query(columns: Vec<&str>) -> GatewayResponse {
+    GatewayResponse::Query {
+        columns: columns.into_iter().map(str::to_owned).collect(),
+        rows: Vec::new(),
+    }
 }
 
 fn query_response(

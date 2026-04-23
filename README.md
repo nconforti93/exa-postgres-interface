@@ -23,15 +23,19 @@ Implemented prototype scope:
 * Direct Exasol WebSocket backend with TLS, certificate fingerprint pinning, and
   a development-only `validate_certificate = false` mode.
 * Configurable Exasol session initialization for database-side SQL preprocessor activation.
+* PostgreSQL metadata compatibility for the common JDBC and DbVisualizer browse
+  paths: `pg_database`, `pg_namespace`, `pg_tables`, `information_schema`,
+  `pg_user`, `pg_group`, `pg_stat_activity`, and `pg_locks`.
 * Repeatable sample data SQL and an `exapump` setup helper.
 * systemd unit and config examples.
 
 Not implemented yet:
 
-* PostgreSQL system catalog emulation.
-* Prepared statement parameters.
+* General PostgreSQL system catalog emulation beyond the currently mapped
+  JDBC/DbVisualizer query shapes.
+* Binary prepared statement parameters.
 * Real transaction semantic mapping to Exasol.
-* DbVisualizer metadata-query compatibility beyond the basic startup/query path.
+* Broader client compatibility coverage and automated integration tests.
 
 ## Build
 
@@ -115,3 +119,6 @@ EXAPUMP_PROFILE=other-profile scripts/setup_sample_data.sh
 ```bash
 cargo test
 ```
+
+See [docs/postgres-metadata-compatibility.md](docs/postgres-metadata-compatibility.md)
+for the current catalog mapping matrix.

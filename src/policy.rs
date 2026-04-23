@@ -162,6 +162,9 @@ fn local_select(sql: &str) -> Option<StatementPlan> {
     if lower == "select current_database()" {
         return Some(single_value("current_database", "exasol"));
     }
+    if lower == "select current_catalog" || lower == "select current_catalog()" {
+        return Some(single_value("current_catalog", "exasol"));
+    }
     if lower == "select current_schema()" {
         return Some(single_value("current_schema", "public"));
     }
@@ -410,6 +413,8 @@ fn source_column_name(expr: &str) -> String {
     } else if last.contains("rolname") {
         "rolname".to_owned()
     } else if last.contains("current_database") {
+        "datname".to_owned()
+    } else if last.contains("current_catalog") {
         "datname".to_owned()
     } else {
         last

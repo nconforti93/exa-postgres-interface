@@ -86,6 +86,30 @@ PGPASSWORD='EXASOL_PASSWORD' psql \
 When testing from outside the EC2 instance, replace `127.0.0.1` with the
 instance address and ensure `server.listen_host = "0.0.0.0"`.
 
+## Optional JDBC Smoke Test
+
+The repository includes a small PostgreSQL JDBC smoke client that uses
+`PreparedStatement`, forcing the extended protocol path used by many Java tools.
+
+Download the PostgreSQL JDBC driver, compile the smoke client, and run it
+against a running gateway:
+
+```bash
+curl -L -o /tmp/postgresql.jar https://jdbc.postgresql.org/download/postgresql-42.7.8.jar
+javac -cp /tmp/postgresql.jar tests/jdbc/PgJdbcSmoke.java
+java -cp /tmp/postgresql.jar:tests/jdbc PgJdbcSmoke \
+  'jdbc:postgresql://127.0.0.1:15432/exasol?preferQueryMode=extended' \
+  sys \
+  'EXASOL_PASSWORD'
+```
+
+Expected output:
+
+```text
+OK columns=1 rows=1
+OK columns=3 rows=3
+```
+
 ## Basic Query
 
 ```sql

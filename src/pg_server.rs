@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
@@ -35,6 +36,30 @@ use crate::policy::{StatementPlan, classify_statement};
 
 struct SessionState {
     exasol: Mutex<ExasolSession>,
+    extended_results: Mutex<HashMap<String, GatewayResponse>>,
+}
+
+#[derive(Clone, Debug)]
+enum GatewayResponse {
+    Empty,
+    Query {
+        columns: Vec<String>,
+        rows: Vec<Vec<Option<String>>>,
+    },
+    Execution {
+        command: String,
+        rows: Option<usize>,
+    },
+    TransactionStart {
+        command: String,
+    },
+    TransactionEnd {
+        command: String,
+    },
+    Error {
+        sqlstate: String,
+        message: String,
+    },
 }
 
 pub struct ExasolPgWireHandler {
@@ -76,6 +101,7 @@ impl ExasolPgWireHandler {
             }
             Ok::<_, ExasolError>(SessionState {
                 exasol: Mutex::new(session),
+                extended_results: Mutex::new(HashMap::new()),
             })
         })
         .await
@@ -90,29 +116,51 @@ impl ExasolPgWireHandler {
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
+        self.execute_statement(client, sql)
+            .await?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+
+    async fn execute_statement<C>(
+        &self,
+        client: &mut C,
+        sql: &str,
+    ) -> PgWireResult<Vec<GatewayResponse>>
+    where
+        C: ClientInfo + ClientPortalStore + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
+        C::PortalStore: PortalStore,
+        C::Error: Debug,
+        PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
+    {
         match classify_statement(sql) {
-            StatementPlan::Empty => Ok(vec![Response::EmptyQuery]),
-            StatementPlan::ClientSet => Ok(vec![Response::Execution(Tag::new("SET"))]),
-            StatementPlan::ClientTransactionStart => {
-                Ok(vec![Response::TransactionStart(Tag::new("BEGIN"))])
-            }
+            StatementPlan::Empty => Ok(vec![GatewayResponse::Empty]),
+            StatementPlan::ClientSet => Ok(vec![GatewayResponse::Execution {
+                command: "SET".to_owned(),
+                rows: None,
+            }]),
+            StatementPlan::ClientTransactionStart => Ok(vec![GatewayResponse::TransactionStart {
+                command: "BEGIN".to_owned(),
+            }]),
             StatementPlan::ClientTransactionEnd { command } => {
-                Ok(vec![Response::TransactionEnd(Tag::new(command))])
+                Ok(vec![GatewayResponse::TransactionEnd {
+                    command: command.to_owned(),
+                }])
             }
-            StatementPlan::ClientShow { name, value } => Ok(vec![Response::Query(query_response(
-                vec![name],
-                vec![vec![Some(value)]],
-            )?)]),
+            StatementPlan::ClientShow { name, value } => Ok(vec![GatewayResponse::Query {
+                columns: vec![name],
+                rows: vec![vec![Some(value)]],
+            }]),
             StatementPlan::ClientSelect { columns, rows } => {
-                Ok(vec![Response::Query(query_response(columns, rows)?)])
+                Ok(vec![GatewayResponse::Query { columns, rows }])
             }
             StatementPlan::Reject { sqlstate, message } => {
                 warn!(%sqlstate, %message, "rejecting unsupported statement");
-                Ok(vec![Response::Error(Box::new(ErrorInfo::new(
-                    "ERROR".to_owned(),
-                    sqlstate.to_owned(),
+                Ok(vec![GatewayResponse::Error {
+                    sqlstate: sqlstate.to_owned(),
                     message,
-                )))])
+                }])
             }
             StatementPlan::Read => {
                 let state = client
@@ -252,13 +300,15 @@ impl ExtendedQueryHandler for ExasolPgWireHandler {
             .ok_or_else(|| PgWireError::PortalNotFound(portal_name.to_owned()))?;
 
         client.set_state(PgWireConnectionState::QueryInProgress);
-        let response = ExtendedQueryHandler::do_query(
-            self,
-            client,
-            portal.as_ref(),
-            message.max_rows as usize,
-        )
-        .await?;
+        let cached_response = take_cached_extended_result(client, portal_name)?;
+        let was_described = cached_response.is_some();
+        let response = if let Some(response) = cached_response {
+            Response::try_from(response)?
+        } else {
+            ExtendedQueryHandler::do_query(self, client, portal.as_ref(), message.max_rows as usize)
+                .await?
+        };
+        let send_describe = !matches!(response, Response::Query(_)) || !was_described;
 
         match response {
             Response::EmptyQuery => {
@@ -269,7 +319,7 @@ impl ExtendedQueryHandler for ExasolPgWireHandler {
                     .await?;
             }
             Response::Query(results) => {
-                send_query_response(client, results, true).await?;
+                send_query_response(client, results, send_describe).await?;
             }
             Response::Execution(tag) => {
                 send_execution_response(client, tag).await?;
@@ -317,8 +367,8 @@ impl ExtendedQueryHandler for ExasolPgWireHandler {
 
     async fn do_describe_portal<C>(
         &self,
-        _client: &mut C,
-        _target: &Portal<Self::Statement>,
+        client: &mut C,
+        target: &Portal<Self::Statement>,
     ) -> PgWireResult<DescribePortalResponse>
     where
         C: ClientInfo + ClientPortalStore + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
@@ -326,7 +376,20 @@ impl ExtendedQueryHandler for ExasolPgWireHandler {
         C::Error: Debug,
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
-        Ok(DescribePortalResponse::new(vec![]))
+        if target.parameter_len() > 0 {
+            return Err(pg_error(
+                "0A000",
+                "prepared statement parameters are not implemented",
+            ));
+        }
+
+        let mut responses = self
+            .execute_statement(client, &target.statement.statement)
+            .await?;
+        let response = responses.pop().unwrap_or(GatewayResponse::Empty);
+        let fields = response.fields();
+        cache_extended_result(client, &target.name, response)?;
+        Ok(DescribePortalResponse::new(fields))
     }
 
     async fn do_query<C>(
@@ -350,9 +413,9 @@ impl ExtendedQueryHandler for ExasolPgWireHandler {
         }
 
         let mut responses = self
-            .execute_sql(client, &portal.statement.statement)
+            .execute_statement(client, &portal.statement.statement)
             .await?;
-        Ok(responses.pop().unwrap_or(Response::EmptyQuery))
+        Response::try_from(responses.pop().unwrap_or(GatewayResponse::Empty))
     }
 }
 
@@ -412,7 +475,7 @@ impl PgWireServerHandlers for ExasolPgWireFactory {
     }
 }
 
-fn map_exasol_result(result: ExasolResult) -> PgWireResult<Vec<Response>> {
+fn map_exasol_result(result: ExasolResult) -> PgWireResult<Vec<GatewayResponse>> {
     match result {
         ExasolResult::ResultSet { columns, rows } => {
             let names = columns
@@ -422,12 +485,96 @@ fn map_exasol_result(result: ExasolResult) -> PgWireResult<Vec<Response>> {
                     column.name
                 })
                 .collect();
-            Ok(vec![Response::Query(query_response(names, rows)?)])
+            Ok(vec![GatewayResponse::Query {
+                columns: names,
+                rows,
+            }])
         }
-        ExasolResult::RowCount(rows) => {
-            Ok(vec![Response::Execution(Tag::new("OK").with_rows(rows))])
+        ExasolResult::RowCount(rows) => Ok(vec![GatewayResponse::Execution {
+            command: "OK".to_owned(),
+            rows: Some(rows),
+        }]),
+    }
+}
+
+impl GatewayResponse {
+    fn fields(&self) -> Vec<FieldInfo> {
+        match self {
+            GatewayResponse::Query { columns, .. } => columns
+                .iter()
+                .cloned()
+                .map(|name| FieldInfo::new(name, None, None, Type::TEXT, FieldFormat::Text))
+                .collect(),
+            _ => Vec::new(),
         }
     }
+}
+
+impl TryFrom<GatewayResponse> for Response {
+    type Error = PgWireError;
+
+    fn try_from(response: GatewayResponse) -> Result<Self, PgWireError> {
+        Ok(match response {
+            GatewayResponse::Empty => Response::EmptyQuery,
+            GatewayResponse::Query { columns, rows } => {
+                Response::Query(query_response(columns, rows)?)
+            }
+            GatewayResponse::Execution { command, rows } => {
+                let tag = if let Some(rows) = rows {
+                    Tag::new(&command).with_rows(rows)
+                } else {
+                    Tag::new(&command)
+                };
+                Response::Execution(tag)
+            }
+            GatewayResponse::TransactionStart { command } => {
+                Response::TransactionStart(Tag::new(&command))
+            }
+            GatewayResponse::TransactionEnd { command } => {
+                Response::TransactionEnd(Tag::new(&command))
+            }
+            GatewayResponse::Error { sqlstate, message } => Response::Error(Box::new(
+                ErrorInfo::new("ERROR".to_owned(), sqlstate, message),
+            )),
+        })
+    }
+}
+
+fn cache_extended_result<C>(
+    client: &C,
+    portal_name: &str,
+    response: GatewayResponse,
+) -> PgWireResult<()>
+where
+    C: ClientInfo,
+{
+    let state = client
+        .session_extensions()
+        .get::<SessionState>()
+        .ok_or_else(|| pg_error("08003", "Exasol session is not connected"))?;
+    let mut cache = state
+        .extended_results
+        .lock()
+        .map_err(|_| pg_error("58000", "extended result cache lock poisoned"))?;
+    cache.insert(portal_name.to_owned(), response);
+    Ok(())
+}
+
+fn take_cached_extended_result<C>(
+    client: &C,
+    portal_name: &str,
+) -> PgWireResult<Option<GatewayResponse>>
+where
+    C: ClientInfo,
+{
+    let Some(state) = client.session_extensions().get::<SessionState>() else {
+        return Ok(None);
+    };
+    let mut cache = state
+        .extended_results
+        .lock()
+        .map_err(|_| pg_error("58000", "extended result cache lock poisoned"))?;
+    Ok(cache.remove(portal_name))
 }
 
 fn query_response(

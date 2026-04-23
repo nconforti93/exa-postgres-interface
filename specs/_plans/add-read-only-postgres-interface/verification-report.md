@@ -43,6 +43,7 @@ external application.
 * `src/main.rs`
 * `src/pg_server.rs`
 * `src/policy.rs`
+* `tests/jdbc/PgJdbcSmoke.java`
 * `specs/mission.md`
 * `specs/_plans/add-read-only-postgres-interface/implementation-notes.md`
 * `specs/_plans/add-read-only-postgres-interface/protocol/read-only-query-path/spec.md`
@@ -62,11 +63,18 @@ repository has one active implementation path.
 * `exapump sql --profile nc-personal-2 "SELECT 1"` passed and returned `1`.
 * Downloaded PostgreSQL client packages without system install privileges,
   extracted `psql` under `/tmp/pgclient`, and used it for live smoke tests.
+* Downloaded PostgreSQL JDBC driver `42.7.8`, extracted OpenJDK 21 packages
+  without system install privileges, compiled `tests/jdbc/PgJdbcSmoke.java`,
+  and used it for live extended-protocol smoke tests.
 * Started the release gateway locally on `127.0.0.1:15433` with a temporary
   config targeting `3.66.165.192:8563`.
 * `psql` through the gateway passed `SELECT 1` and returned `1`.
 * `psql` through the gateway passed the PostgreSQL-flavored sample query using
   `::` casts and `ILIKE`, returning the expected three sample rows.
+* PostgreSQL JDBC through the gateway passed `PreparedStatement` execution for
+  `SELECT 1`, reporting `OK columns=1 rows=1`.
+* PostgreSQL JDBC through the gateway passed `PreparedStatement` execution for
+  the PostgreSQL-flavored sample query, reporting `OK columns=3 rows=3`.
 
 Earlier live database checks from this plan remain valid:
 
@@ -96,6 +104,8 @@ Covered by build/manual verification:
   against the same profile.
 * A real PostgreSQL client, `psql`, can connect through the gateway and execute
   the smoke and sample queries.
+* The PostgreSQL JDBC driver can connect through the gateway using extended
+  query protocol and receives field metadata before result tuples.
 
 ## Known Gaps and Follow-Up Work
 

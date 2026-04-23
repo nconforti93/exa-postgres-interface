@@ -47,6 +47,28 @@ cp config/example.toml config/local.toml
 
 The PostgreSQL client username and password are passed through to Exasol.
 
+Exasol Personal often uses a self-signed TLS certificate. For secure operation,
+pin the certificate fingerprint in `config/local.toml`:
+
+```toml
+[exasol]
+dsn = "127.0.0.1:8563"
+encryption = true
+certificate_fingerprint = "SHA256_HEX_FINGERPRINT"
+```
+
+For a quick local-only prototype, certificate validation can be disabled:
+
+```toml
+[exasol]
+dsn = "127.0.0.1:8563"
+encryption = true
+validate_certificate = false
+```
+
+This maps to pyexasol's `nocertcheck` mode and should not be used for exposed
+or production-like deployments.
+
 For same-host testing, `server.listen_host = "127.0.0.1"` is sufficient. For a
 client connecting from outside the EC2 instance, set:
 

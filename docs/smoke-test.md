@@ -29,6 +29,25 @@ exa-postgres-interface --config config/local.toml
 Set `exasol.dsn` and the preprocessor activation SQL for the target Exasol
 Personal instance before starting the service.
 
+For Exasol running on the same host with a self-signed certificate, either pin
+the server fingerprint:
+
+```toml
+[exasol]
+dsn = "127.0.0.1:8563"
+encryption = true
+certificate_fingerprint = "SHA256_HEX_FINGERPRINT"
+```
+
+or use the local prototype escape hatch:
+
+```toml
+[exasol]
+dsn = "127.0.0.1:8563"
+encryption = true
+validate_certificate = false
+```
+
 When running on the same EC2 instance as Exasol and connecting from a remote
 desktop client, use this server binding:
 

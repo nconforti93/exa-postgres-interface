@@ -8,6 +8,12 @@ log_level = "INFO"
 [exasol]
 dsn = "example-host.example.com:8563"
 encryption = true
+# Recommended for self-signed Exasol Personal certificates:
+# certificate_fingerprint = "SHA256_HEX_FINGERPRINT"
+#
+# Development-only escape hatch for local self-signed certificates. Prefer
+# certificate_fingerprint when possible.
+validate_certificate = true
 pass_client_credentials = true
 schema = ""
 

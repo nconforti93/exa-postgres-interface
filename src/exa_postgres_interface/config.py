@@ -16,6 +16,8 @@ class ServerConfig:
 class ExasolConfig:
     dsn: str
     encryption: bool = True
+    certificate_fingerprint: str = ""
+    validate_certificate: bool = True
     pass_client_credentials: bool = True
     schema: str = ""
 
@@ -60,6 +62,8 @@ class AppConfig:
         exasol = ExasolConfig(
             dsn=dsn,
             encryption=bool(exasol_raw.get("encryption", True)),
+            certificate_fingerprint=str(exasol_raw.get("certificate_fingerprint", "")).strip(),
+            validate_certificate=bool(exasol_raw.get("validate_certificate", True)),
             pass_client_credentials=bool(exasol_raw.get("pass_client_credentials", True)),
             schema=str(exasol_raw.get("schema", "")),
         )

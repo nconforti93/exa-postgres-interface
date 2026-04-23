@@ -42,8 +42,13 @@ class PyexasolBackendFactory:
         if not self.config.exasol.pass_client_credentials:
             raise BackendError("only client credential passthrough is implemented", "28000")
 
+        dsn = _dsn_with_certificate_policy(
+            self.config.exasol.dsn,
+            self.config.exasol.certificate_fingerprint,
+            self.config.exasol.validate_certificate,
+        )
         kwargs: dict[str, object] = {
-            "dsn": self.config.exasol.dsn,
+            "dsn": dsn,
             "user": username,
             "password": password,
             "encryption": self.config.exasol.encryption,
@@ -141,3 +146,27 @@ def _first_non_null(rows: tuple[tuple[object, ...], ...], idx: int) -> object:
         if idx < len(row) and row[idx] is not None:
             return row[idx]
     return None
+
+
+def _dsn_with_certificate_policy(dsn: str, fingerprint: str, validate_certificate: bool) -> str:
+    if fingerprint:
+        return _append_dsn_fingerprint(dsn, fingerprint)
+    if not validate_certificate:
+        return _append_dsn_fingerprint(dsn, "nocertcheck")
+    return dsn
+
+
+def _append_dsn_fingerprint(dsn: str, fingerprint: str) -> str:
+    parts = []
+    for part in dsn.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        host_part, sep, port = part.rpartition(":")
+        if not sep:
+            host_part = part
+            port = ""
+        if "/" not in host_part:
+            host_part = f"{host_part}/{fingerprint}"
+        parts.append(f"{host_part}:{port}" if port else host_part)
+    return ",".join(parts)

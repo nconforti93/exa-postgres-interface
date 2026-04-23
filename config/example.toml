@@ -1,4 +1,6 @@
 [server]
+# Use 127.0.0.1 for same-host testing only. Use 0.0.0.0 when PostgreSQL
+# clients connect from outside the EC2 instance.
 listen_host = "127.0.0.1"
 listen_port = 15432
 log_level = "INFO"

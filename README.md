@@ -47,6 +47,17 @@ cp config/example.toml config/local.toml
 
 The PostgreSQL client username and password are passed through to Exasol.
 
+For same-host testing, `server.listen_host = "127.0.0.1"` is sufficient. For a
+client connecting from outside the EC2 instance, set:
+
+```toml
+[server]
+listen_host = "0.0.0.0"
+listen_port = 15432
+```
+
+The EC2 security group must also allow inbound TCP `15432` from the client IP.
+
 ## Run
 
 ```bash

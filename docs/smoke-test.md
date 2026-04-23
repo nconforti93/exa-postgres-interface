@@ -29,6 +29,18 @@ exa-postgres-interface --config config/local.toml
 Set `exasol.dsn` and the preprocessor activation SQL for the target Exasol
 Personal instance before starting the service.
 
+When running on the same EC2 instance as Exasol and connecting from a remote
+desktop client, use this server binding:
+
+```toml
+[server]
+listen_host = "0.0.0.0"
+listen_port = 15432
+```
+
+`127.0.0.1` only listens on the EC2 instance loopback interface and is not
+reachable through the instance public IP.
+
 ## Connect DbVisualizer
 
 Use the PostgreSQL connector:

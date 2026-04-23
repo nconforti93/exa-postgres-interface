@@ -107,6 +107,7 @@ Expected output:
 
 ```text
 OK columns=1 rows=1
+OK columns=1 rows=1
 OK columns=3 rows=3
 ```
 

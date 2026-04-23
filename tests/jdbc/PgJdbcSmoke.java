@@ -12,6 +12,7 @@ public class PgJdbcSmoke {
 
         try (Connection conn = DriverManager.getConnection(args[0], args[1], args[2])) {
             runQuery(conn, "SELECT 1", 1);
+            runQuery(conn, "SELECT d.datname AS table_cat FROM pg_catalog.pg_database d", 1);
             runQuery(
                 conn,
                 "SELECT order_id, order_ts::DATE AS order_date, amount::DECIMAL(18, 2) AS amount_eur " +

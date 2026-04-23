@@ -17,6 +17,9 @@ provides:
   ReadyForQuery handling.
 * Extended Query execution sends row descriptions before result tuples so
   PostgreSQL clients do not receive `DataRow` messages without field metadata.
+* Local compatibility responses for initial PostgreSQL catalog probes including
+  `pg_catalog.pg_database`, `pg_catalog.pg_namespace`, `pg_catalog.pg_roles`,
+  and `pg_catalog.pg_settings`.
 * Read-only statement policy separated from Exasol execution.
 * Local compatibility handling for common PostgreSQL client session commands and
   transaction wrappers.
@@ -57,7 +60,7 @@ repository has one active implementation path.
   Rust toolchain.
 * `cargo fmt` passed.
 * `cargo fmt --check` passed.
-* `cargo test` passed: 10 tests.
+* `cargo test` passed: 12 tests.
 * `cargo build --release` passed.
 * `git diff --check` passed.
 * `exapump sql --profile nc-personal-2 "SELECT 1"` passed and returned `1`.
@@ -69,10 +72,15 @@ repository has one active implementation path.
 * Started the release gateway locally on `127.0.0.1:15433` with a temporary
   config targeting `3.66.165.192:8563`.
 * `psql` through the gateway passed `SELECT 1` and returned `1`.
+* `psql` through the gateway passed
+  `SELECT d.datname AS table_cat FROM pg_catalog.pg_database d`, returning
+  `exasol`.
 * `psql` through the gateway passed the PostgreSQL-flavored sample query using
   `::` casts and `ILIKE`, returning the expected three sample rows.
 * PostgreSQL JDBC through the gateway passed `PreparedStatement` execution for
   `SELECT 1`, reporting `OK columns=1 rows=1`.
+* PostgreSQL JDBC through the gateway passed `PreparedStatement` execution for a
+  `pg_catalog.pg_database` query, reporting `OK columns=1 rows=1`.
 * PostgreSQL JDBC through the gateway passed `PreparedStatement` execution for
   the PostgreSQL-flavored sample query, reporting `OK columns=3 rows=3`.
 
@@ -106,6 +114,8 @@ Covered by build/manual verification:
   the smoke and sample queries.
 * The PostgreSQL JDBC driver can connect through the gateway using extended
   query protocol and receives field metadata before result tuples.
+* Initial PostgreSQL database metadata probes map the single Exasol database
+  concept to the PostgreSQL database name `exasol`.
 
 ## Known Gaps and Follow-Up Work
 

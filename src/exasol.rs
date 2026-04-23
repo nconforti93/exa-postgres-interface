@@ -177,20 +177,7 @@ impl ExasolSession {
             .send(Message::Text(payload))
             .map_err(|err| ExasolError::Request(err.to_string()))?;
 
-        let message = self
-            .ws
-            .read()
-            .map_err(|err| ExasolError::Request(err.to_string()))?;
-        let text = match message {
-            Message::Text(text) => text,
-            Message::Binary(bytes) => String::from_utf8(bytes)
-                .map_err(|err| ExasolError::Request(format!("invalid UTF-8 response: {err}")))?,
-            other => {
-                return Err(ExasolError::Request(format!(
-                    "unexpected websocket message: {other:?}"
-                )));
-            }
-        };
+        let text = self.read_json_response()?;
         let response: Value =
             serde_json::from_str(&text).map_err(|err| ExasolError::Request(err.to_string()))?;
 
@@ -207,6 +194,48 @@ impl ExasolSession {
                 .unwrap_or("unknown Exasol error");
             Err(ExasolError::Execution(format!("{text} (SQL code: {code})")))
         }
+    }
+
+    fn read_json_response(&mut self) -> Result<String, ExasolError> {
+        loop {
+            let message = self
+                .ws
+                .read()
+                .map_err(|err| ExasolError::Request(err.to_string()))?;
+            match message {
+                Message::Ping(payload) => {
+                    self.ws
+                        .send(Message::Pong(payload))
+                        .map_err(|err| ExasolError::Request(err.to_string()))?;
+                }
+                other => {
+                    if let Some(text) = response_text_from_message(other)? {
+                        return Ok(text);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn response_text_from_message(message: Message) -> Result<Option<String>, ExasolError> {
+    match message {
+        Message::Text(text) => Ok(Some(text)),
+        Message::Binary(bytes) => String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|err| ExasolError::Request(format!("invalid UTF-8 response: {err}"))),
+        Message::Pong(payload) => {
+            tracing::debug!(
+                payload = %String::from_utf8_lossy(&payload),
+                "ignoring Exasol websocket pong/progress frame"
+            );
+            Ok(None)
+        }
+        Message::Frame(_) => Ok(None),
+        Message::Ping(_) => Ok(None),
+        Message::Close(close) => Err(ExasolError::Request(format!(
+            "Exasol closed websocket while waiting for response: {close:?}"
+        ))),
     }
 }
 
@@ -461,5 +490,22 @@ mod tests {
         let endpoint = Endpoint::parse(&config.dsn, &config).unwrap();
 
         assert_eq!(endpoint.fingerprint.as_deref(), Some("ABC"));
+    }
+
+    #[test]
+    fn skips_exasol_pong_progress_frame() {
+        assert!(
+            response_text_from_message(Message::Pong(b"EXECUTING".to_vec()))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn accepts_text_response_frame() {
+        assert_eq!(
+            response_text_from_message(Message::Text(r#"{"status":"ok"}"#.to_owned())).unwrap(),
+            Some(r#"{"status":"ok"}"#.to_owned())
+        );
     }
 }

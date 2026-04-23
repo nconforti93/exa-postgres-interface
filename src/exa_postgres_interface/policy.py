@@ -11,6 +11,7 @@ class StatementCategory(str, Enum):
     DDL = "ddl"
     TRANSACTION = "transaction"
     SESSION = "session"
+    CLIENT_SESSION = "client_session"
     EMPTY = "empty"
     UNSUPPORTED = "unsupported"
 
@@ -27,6 +28,17 @@ WRITE_KEYWORDS = {"INSERT", "UPDATE", "DELETE", "MERGE", "TRUNCATE", "COPY", "IM
 DDL_KEYWORDS = {"CREATE", "ALTER", "DROP", "RENAME", "COMMENT", "GRANT", "REVOKE"}
 TRANSACTION_KEYWORDS = {"BEGIN", "START", "COMMIT", "ROLLBACK", "SAVEPOINT", "RELEASE"}
 SESSION_KEYWORDS = {"SET", "RESET", "SHOW"}
+CLIENT_SESSION_SHOW_NAMES = {
+    "APPLICATION_NAME",
+    "CLIENT_ENCODING",
+    "CLIENT_MIN_MESSAGES",
+    "DATESTYLE",
+    "EXTRA_FLOAT_DIGITS",
+    "INTERVALSTYLE",
+    "SEARCH_PATH",
+    "STANDARD_CONFORMING_STRINGS",
+    "TIMEZONE",
+}
 
 
 def strip_sql_comments(sql: str) -> str:
@@ -65,10 +77,17 @@ def first_keyword(sql: str) -> str:
     return match.group(1).upper() if match else ""
 
 
+def normalized_sql(sql: str) -> str:
+    return strip_sql_comments(sql).strip().rstrip(";").strip()
+
+
 def classify_statement(sql: str) -> StatementDecision:
-    keyword = first_keyword(sql)
+    cleaned = normalized_sql(sql)
+    keyword = first_keyword(cleaned)
     if not keyword:
         return StatementDecision(StatementCategory.EMPTY, True)
+    if is_client_session_command(cleaned):
+        return StatementDecision(StatementCategory.CLIENT_SESSION, True)
     if keyword in READ_KEYWORDS:
         return StatementDecision(StatementCategory.READ, True)
     if keyword in WRITE_KEYWORDS:
@@ -100,3 +119,19 @@ def classify_statement(sql: str) -> StatementDecision:
         False,
         f"unsupported SQL statement class: {keyword}",
     )
+
+
+def is_client_session_command(sql: str) -> bool:
+    if re.match(r"^SET\s+SESSION\s+CHARACTERISTICS\s+AS\s+TRANSACTION\b", sql, re.IGNORECASE):
+        return True
+    if re.match(r"^SET\s+(SESSION\s+)?(?!TRANSACTION\b)[A-Za-z_][A-Za-z0-9_.]*\s*=", sql, re.IGNORECASE):
+        return True
+    if re.match(r"^SET\s+(SESSION\s+)?[A-Za-z_][A-Za-z0-9_.]*\s+TO\s+", sql, re.IGNORECASE):
+        return True
+    if re.match(r"^RESET\s+(ALL|[A-Za-z_][A-Za-z0-9_.]*)$", sql, re.IGNORECASE):
+        return True
+
+    show_match = re.match(r"^SHOW\s+([A-Za-z_][A-Za-z0-9_.]*)$", sql, re.IGNORECASE)
+    if show_match:
+        return show_match.group(1).replace(".", "_").upper() in CLIENT_SESSION_SHOW_NAMES
+    return False

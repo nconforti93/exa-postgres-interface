@@ -23,6 +23,9 @@ class StatementGateway:
         decision = classify_statement(sql)
         if decision.category is StatementCategory.EMPTY:
             return CommandResult("")
+        if decision.category is StatementCategory.CLIENT_SESSION:
+            LOG.info("acknowledging PostgreSQL client session command locally")
+            return CommandResult("SET")
         if not decision.allowed:
             LOG.warning("rejecting unsupported SQL: category=%s reason=%s", decision.category, decision.reason)
             raise GatewayError(decision.reason)

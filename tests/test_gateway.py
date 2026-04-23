@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 
 from exa_postgres_interface.gateway import GatewayError, StatementGateway
-from exa_postgres_interface.messages import Column, QueryResult
+from exa_postgres_interface.messages import Column, CommandResult, QueryResult
 
 
 class FakeBackend:
@@ -34,6 +34,14 @@ class GatewayTests(unittest.TestCase):
 
         result = gateway.execute("SELECT 1")
         self.assertIsInstance(result, QueryResult)
+
+    def test_acknowledges_safe_session_command_without_backend_execution(self) -> None:
+        backend = FakeBackend()
+        result = StatementGateway(backend).execute("SET extra_float_digits = 3")
+
+        self.assertIsInstance(result, CommandResult)
+        self.assertEqual(result.tag, "SET")
+        self.assertEqual(backend.sql, [])
 
 
 if __name__ == "__main__":

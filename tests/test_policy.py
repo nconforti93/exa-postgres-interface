@@ -27,6 +27,23 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse(decision.allowed)
         self.assertEqual(decision.category, StatementCategory.TRANSACTION)
 
+    def test_allows_safe_postgresql_client_session_commands(self) -> None:
+        for sql in (
+            "SET extra_float_digits = 3",
+            "SET application_name TO 'DbVisualizer'",
+            "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY",
+            "RESET extra_float_digits",
+            "SHOW DateStyle",
+        ):
+            decision = classify_statement(sql)
+            self.assertTrue(decision.allowed)
+            self.assertEqual(decision.category, StatementCategory.CLIENT_SESSION)
+
+    def test_does_not_treat_set_transaction_as_client_local(self) -> None:
+        decision = classify_statement("SET TRANSACTION READ ONLY")
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.category, StatementCategory.SESSION)
+
     def test_ignores_comments_before_keyword(self) -> None:
         self.assertEqual(first_keyword("-- hello\n/* block */ SELECT 1"), "SELECT")
 

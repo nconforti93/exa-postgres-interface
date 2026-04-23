@@ -55,8 +55,10 @@ Implemented the first prototype scaffold for the read-only PostgreSQL interface:
   Returned rows:
   `1,2026-01-02,125.50`, `2,2026-01-03,210.00`, and
   `4,2026-01-05,42.42`.
+* Added local acknowledgement for safe PostgreSQL client session commands such
+  as startup `SET` statements issued by PostgreSQL drivers and DbVisualizer.
 * `PYTHONPATH=src python -m unittest discover -s tests` passed:
-  14 tests ran successfully, including a TCP-level PostgreSQL startup,
+  21 tests ran successfully, including a TCP-level PostgreSQL startup,
   password-authentication, and simple-query protocol test with a fake backend.
 * The canonical PostgreSQL demo query fails when sent directly to Exasol without
   the preprocessor, first on PostgreSQL `::` casts and then on `ILIKE` after

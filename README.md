@@ -14,6 +14,8 @@ Implemented prototype scope:
 
 * PostgreSQL protocol startup with cleartext password authentication.
 * Simple Query protocol for row-returning read-only statements.
+* Local acknowledgement of safe PostgreSQL client session commands such as
+  startup `SET` statements.
 * Explicit policy rejection for DML, DDL, transaction commands, and unsupported
   protocol messages.
 * Exasol backend abstraction using `pyexasol`.

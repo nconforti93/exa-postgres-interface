@@ -141,15 +141,6 @@ fn local_show(sql: &str) -> Option<StatementPlan> {
 
 fn local_select(sql: &str) -> Option<StatementPlan> {
     let lower = sql.to_ascii_lowercase();
-    if lower.contains("pg_catalog.pg_database") || lower.contains(" pg_database") {
-        return Some(catalog_pg_database(sql));
-    }
-    if lower.contains("pg_catalog.pg_namespace") || lower.contains(" pg_namespace") {
-        return Some(catalog_pg_namespace(sql));
-    }
-    if lower.contains("pg_catalog.pg_roles") || lower.contains(" pg_roles") {
-        return Some(catalog_pg_roles(sql));
-    }
     if lower.contains("pg_catalog.pg_settings") || lower.contains(" pg_settings") {
         return Some(catalog_pg_settings(sql));
     }
@@ -179,78 +170,6 @@ fn single_value(name: &str, value: &str) -> StatementPlan {
         columns: vec![name.to_owned()],
         rows: vec![vec![Some(value.to_owned())]],
     }
-}
-
-fn catalog_pg_database(sql: &str) -> StatementPlan {
-    catalog_response(
-        sql,
-        &[
-            ("oid", "1"),
-            ("datname", "exasol"),
-            ("datdba", "10"),
-            ("encoding", "6"),
-            ("datlocprovider", "c"),
-            ("datistemplate", "f"),
-            ("datallowconn", "t"),
-            ("datconnlimit", "-1"),
-            ("datfrozenxid", "0"),
-            ("datminmxid", "0"),
-            ("dattablespace", "1663"),
-            ("datcollate", "C.UTF-8"),
-            ("datctype", "C.UTF-8"),
-            ("datlocale", ""),
-            ("daticurules", ""),
-            ("datcollversion", ""),
-            ("datacl", ""),
-        ],
-    )
-}
-
-fn catalog_pg_namespace(sql: &str) -> StatementPlan {
-    catalog_response_many(
-        sql,
-        &[
-            vec![
-                ("oid", "2200"),
-                ("nspname", "public"),
-                ("nspowner", "10"),
-                ("nspacl", ""),
-            ],
-            vec![
-                ("oid", "11"),
-                ("nspname", "pg_catalog"),
-                ("nspowner", "10"),
-                ("nspacl", ""),
-            ],
-            vec![
-                ("oid", "13207"),
-                ("nspname", "information_schema"),
-                ("nspowner", "10"),
-                ("nspacl", ""),
-            ],
-        ],
-    )
-}
-
-fn catalog_pg_roles(sql: &str) -> StatementPlan {
-    catalog_response(
-        sql,
-        &[
-            ("oid", "10"),
-            ("rolname", "sys"),
-            ("rolsuper", "t"),
-            ("rolinherit", "t"),
-            ("rolcreaterole", "t"),
-            ("rolcreatedb", "t"),
-            ("rolcanlogin", "t"),
-            ("rolreplication", "f"),
-            ("rolconnlimit", "-1"),
-            ("rolpassword", ""),
-            ("rolvaliduntil", ""),
-            ("rolbypassrls", "t"),
-            ("rolconfig", ""),
-        ],
-    )
 }
 
 fn catalog_pg_settings(sql: &str) -> StatementPlan {
@@ -459,28 +378,21 @@ mod tests {
     }
 
     #[test]
-    fn handles_pg_database_catalog_query_locally() {
-        let plan = classify_statement(
-            "SELECT d.datname AS table_cat FROM pg_catalog.pg_database d ORDER BY d.datname",
-        );
+    fn lets_pg_database_catalog_query_reach_exasol() {
         assert_eq!(
-            plan,
-            StatementPlan::ClientSelect {
-                columns: vec!["table_cat".to_owned()],
-                rows: vec![vec![Some("exasol".to_owned())]],
-            }
+            classify_statement(
+                "SELECT d.datname AS table_cat FROM pg_catalog.pg_database d ORDER BY d.datname",
+            ),
+            StatementPlan::Read
         );
     }
 
     #[test]
-    fn handles_pg_namespace_catalog_query_locally() {
-        let plan =
-            classify_statement("SELECT n.nspname AS table_schem FROM pg_catalog.pg_namespace n");
-        assert!(matches!(
-            plan,
-            StatementPlan::ClientSelect { columns, rows }
-                if columns == vec!["table_schem".to_owned()] && rows.iter().any(|row| row == &vec![Some("public".to_owned())])
-        ));
+    fn lets_pg_namespace_catalog_query_reach_exasol() {
+        assert_eq!(
+            classify_statement("SELECT n.nspname AS table_schem FROM pg_catalog.pg_namespace n"),
+            StatementPlan::Read
+        );
     }
 
     #[test]

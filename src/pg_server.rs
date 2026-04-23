@@ -136,9 +136,6 @@ impl ExasolPgWireHandler {
         PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
     {
         debug!(sql = %sql, "handling PostgreSQL statement");
-        if let Some(response) = self.execute_metadata_query(client, sql).await? {
-            return Ok(vec![response]);
-        }
         match classify_statement(sql) {
             StatementPlan::Empty => Ok(vec![GatewayResponse::Empty]),
             StatementPlan::ClientSet => Ok(vec![GatewayResponse::Execution {

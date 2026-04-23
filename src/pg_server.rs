@@ -8,7 +8,9 @@ use pgwire::api::auth::{
     save_startup_parameters_to_metadata,
 };
 use pgwire::api::portal::Portal;
-use pgwire::api::query::{ExtendedQueryHandler, SimpleQueryHandler};
+use pgwire::api::query::{
+    ExtendedQueryHandler, SimpleQueryHandler, send_execution_response, send_query_response,
+};
 use pgwire::api::results::{
     DataRowEncoder, DescribePortalResponse, DescribeStatementResponse, FieldFormat, FieldInfo,
     QueryResponse, Response, Tag,
@@ -16,10 +18,12 @@ use pgwire::api::results::{
 use pgwire::api::stmt::{QueryParser, StoredStatement};
 use pgwire::api::store::PortalStore;
 use pgwire::api::{
-    ClientInfo, ClientPortalStore, METADATA_USER, PgWireConnectionState, PgWireServerHandlers,
-    PidSecretKeyGenerator, RandomPidSecretKeyGenerator, Type,
+    ClientInfo, ClientPortalStore, DEFAULT_NAME, METADATA_USER, PgWireConnectionState,
+    PgWireServerHandlers, PidSecretKeyGenerator, RandomPidSecretKeyGenerator, Type,
 };
 use pgwire::error::{ErrorInfo, PgWireError, PgWireResult};
+use pgwire::messages::extendedquery::Execute;
+use pgwire::messages::response::EmptyQueryResponse;
 use pgwire::messages::startup::Authentication;
 use pgwire::messages::{PgWireBackendMessage, PgWireFrontendMessage};
 use tokio::task;
@@ -228,6 +232,73 @@ impl ExtendedQueryHandler for ExasolPgWireHandler {
 
     fn query_parser(&self) -> Arc<Self::QueryParser> {
         self.query_parser.clone()
+    }
+
+    async fn on_execute<C>(&self, client: &mut C, message: Execute) -> PgWireResult<()>
+    where
+        C: ClientInfo + ClientPortalStore + Sink<PgWireBackendMessage> + Unpin + Send + Sync,
+        C::PortalStore: PortalStore<Statement = Self::Statement>,
+        C::Error: Debug,
+        PgWireError: From<<C as Sink<PgWireBackendMessage>>::Error>,
+    {
+        if !matches!(client.state(), PgWireConnectionState::ReadyForQuery) {
+            return Err(PgWireError::NotReadyForQuery);
+        }
+
+        let portal_name = message.name.as_deref().unwrap_or(DEFAULT_NAME);
+        let portal = client
+            .portal_store()
+            .get_portal(portal_name)
+            .ok_or_else(|| PgWireError::PortalNotFound(portal_name.to_owned()))?;
+
+        client.set_state(PgWireConnectionState::QueryInProgress);
+        let response = ExtendedQueryHandler::do_query(
+            self,
+            client,
+            portal.as_ref(),
+            message.max_rows as usize,
+        )
+        .await?;
+
+        match response {
+            Response::EmptyQuery => {
+                client
+                    .send(PgWireBackendMessage::EmptyQueryResponse(
+                        EmptyQueryResponse::new(),
+                    ))
+                    .await?;
+            }
+            Response::Query(results) => {
+                send_query_response(client, results, true).await?;
+            }
+            Response::Execution(tag) => {
+                send_execution_response(client, tag).await?;
+            }
+            Response::TransactionStart(tag) => {
+                send_execution_response(client, tag).await?;
+                client
+                    .set_transaction_status(client.transaction_status().to_in_transaction_state());
+            }
+            Response::TransactionEnd(tag) => {
+                send_execution_response(client, tag).await?;
+                client.set_transaction_status(client.transaction_status().to_idle_state());
+            }
+            Response::Error(error) => {
+                client
+                    .send(PgWireBackendMessage::ErrorResponse((*error).into()))
+                    .await?;
+                client.set_transaction_status(client.transaction_status().to_error_state());
+            }
+            Response::CopyIn(_) | Response::CopyOut(_) | Response::CopyBoth(_) => {
+                return Err(pg_error("0A000", "COPY protocol is not implemented"));
+            }
+        }
+
+        client.set_state(PgWireConnectionState::ReadyForQuery);
+        if portal_name == DEFAULT_NAME {
+            client.portal_store().rm_portal(portal_name);
+        }
+        Ok(())
     }
 
     async fn do_describe_statement<C>(

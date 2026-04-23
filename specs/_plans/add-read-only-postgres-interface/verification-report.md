@@ -15,6 +15,8 @@ provides:
 * Simple Query and basic Extended Query support through `pgwire`.
 * PostgreSQL-style row descriptions, data rows, command completions, errors, and
   ReadyForQuery handling.
+* Extended Query execution sends row descriptions before result tuples so
+  PostgreSQL clients do not receive `DataRow` messages without field metadata.
 * Read-only statement policy separated from Exasol execution.
 * Local compatibility handling for common PostgreSQL client session commands and
   transaction wrappers.
@@ -54,10 +56,17 @@ repository has one active implementation path.
   Rust toolchain.
 * `cargo fmt` passed.
 * `cargo fmt --check` passed.
-* `cargo test` passed: 8 tests.
+* `cargo test` passed: 10 tests.
 * `cargo build --release` passed.
 * `git diff --check` passed.
 * `exapump sql --profile nc-personal-2 "SELECT 1"` passed and returned `1`.
+* Downloaded PostgreSQL client packages without system install privileges,
+  extracted `psql` under `/tmp/pgclient`, and used it for live smoke tests.
+* Started the release gateway locally on `127.0.0.1:15433` with a temporary
+  config targeting `3.66.165.192:8563`.
+* `psql` through the gateway passed `SELECT 1` and returned `1`.
+* `psql` through the gateway passed the PostgreSQL-flavored sample query using
+  `::` casts and `ILIKE`, returning the expected three sample rows.
 
 Earlier live database checks from this plan remain valid:
 
@@ -66,11 +75,6 @@ Earlier live database checks from this plan remain valid:
   passed, installing the database-side Python preprocessor.
 * The canonical PostgreSQL-flavored demo query passed in Exasol after activating
   the database-side preprocessor in the same session.
-
-`psql` smoke testing was not run in this environment because `psql` is not
-installed and no PostgreSQL client credentials were exported for gateway login.
-`docs/smoke-test.md` now includes an optional `psql` command for environments
-where the client tool is available.
 
 ## Spec Scenarios Covered
 
@@ -82,6 +86,7 @@ Covered by implementation and unit tests:
 * Local handling for safe PostgreSQL driver session commands.
 * Local handling for common transaction wrappers.
 * Simple Query batch splitting for PostgreSQL protocol compatibility.
+* Exasol WebSocket `Pong("EXECUTING")` progress-frame handling.
 
 Covered by build/manual verification:
 
@@ -89,12 +94,13 @@ Covered by build/manual verification:
 * The configured Exasol Personal profile `nc-personal-2` is reachable with TLS.
 * The Exasol-side SQL preprocessor and sample data path were previously verified
   against the same profile.
+* A real PostgreSQL client, `psql`, can connect through the gateway and execute
+  the smoke and sample queries.
 
 ## Known Gaps and Follow-Up Work
 
 * Manual DbVisualizer smoke testing through the Rust gateway still needs to be
   run with user-supplied Exasol credentials.
-* `psql` smoke testing still needs to be run on a host with `psql` installed.
 * PostgreSQL system catalog and metadata compatibility for browsing are not
   implemented.
 * Prepared statement parameters are not implemented.

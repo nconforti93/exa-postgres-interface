@@ -102,5 +102,6 @@ PostgreSQL wire compatibility SHALL be treated as a client integration layer ove
 
 * *GIVEN* a PostgreSQL client sends transaction-related commands such as `BEGIN`, `COMMIT`, or `ROLLBACK`
 * *WHEN* transaction behavior is not implemented for the current capability scope
-* *THEN* the server SHALL either reject the command with a clear PostgreSQL-compatible error or implement a documented Exasol-backed behavior
-* *AND* the server SHALL NOT silently acknowledge transaction commands in a way that misrepresents Exasol transaction state
+* *THEN* the server SHALL either reject the command with a clear PostgreSQL-compatible error or implement documented client-compatibility behavior
+* *AND* any local acknowledgement SHALL be documented as protocol compatibility rather than Exasol transaction semantics
+* *AND* the server SHALL NOT claim full PostgreSQL transaction semantics until those semantics are implemented against Exasol

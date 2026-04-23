@@ -7,7 +7,6 @@ Wants=network-online.target
 Type=simple
 User=exa-postgres-interface
 Group=exa-postgres-interface
-Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/exa-postgres-interface/bin/exa-postgres-interface --config /etc/exa-postgres-interface/config.toml
 Restart=on-failure
 RestartSec=5

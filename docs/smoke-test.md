@@ -23,7 +23,7 @@ the configured `translation.session_init_sql` statement.
 
 ```bash
 cp config/example.toml config/local.toml
-exa-postgres-interface --config config/local.toml
+cargo run -- --config config/local.toml
 ```
 
 Set `exasol.dsn` and the preprocessor activation SQL for the target Exasol
@@ -68,6 +68,23 @@ Use the PostgreSQL connector:
 * Port: configured `server.listen_port`
 * Database: any value accepted by the client UI
 * User/password: Exasol credentials
+
+## Optional psql Smoke Test
+
+If `psql` is available on the machine running the client test, use the same
+Exasol credentials that DbVisualizer uses:
+
+```bash
+PGPASSWORD='EXASOL_PASSWORD' psql \
+  --host 127.0.0.1 \
+  --port 15432 \
+  --username sys \
+  --dbname exasol \
+  --command 'SELECT 1;'
+```
+
+When testing from outside the EC2 instance, replace `127.0.0.1` with the
+instance address and ensure `server.listen_host = "0.0.0.0"`.
 
 ## Basic Query
 

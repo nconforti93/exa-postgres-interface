@@ -64,36 +64,37 @@ The prototype SHALL NOT include:
 
 ## Tech Stack
 
-No implementation stack has been selected yet.
+Current implementation stack:
 
-Known direction:
-
-* The application is expected to be installable and runnable on Linux.
-* The application shape is a long-running server process, not just a library.
-* SQL translation should use a Python preprocessor script with `sqlglot` inside Exasol.
-* Username/password authentication is the first authentication target.
+* Rust binary built with Cargo.
+* `pgwire` for PostgreSQL wire-protocol server behavior.
+* Direct Exasol WebSocket protocol client for database sessions.
+* Exasol-side Python preprocessor script using `sqlglot` for SQL dialect translation.
+* TOML configuration for listen address, Exasol endpoint, TLS policy, logging, and session initialization.
+* systemd unit template for Linux service operation.
 
 Open decisions:
 
-* Server implementation language and runtime.
-* PostgreSQL wire-protocol implementation strategy or library.
-* Exasol client library or driver.
-* Packaging format for Linux installation.
-* Configuration format for listen address, Exasol endpoint, authentication behavior, logging, and session initialization.
-* How the Python preprocessor script is installed, updated, and selected for each Exasol session.
+* Broader PostgreSQL metadata and system catalog compatibility.
+* Prepared statement parameter translation and type handling.
+* Exasol-backed transaction semantics.
+* Longer-term packaging format beyond a release binary plus systemd unit.
 
 ## Build, Test, Lint, and Format Commands
 
-No commands are currently available because the repository has no source files or build metadata.
+Current commands:
 
-Expected future verification commands SHOULD cover:
+```bash
+cargo fmt
+cargo test
+cargo build --release
+```
 
-* Unit tests for protocol message handling where practical.
-* Unit tests for configuration and error mapping.
-* Tests for SQL dialect translation behavior, including `sqlglot`-based examples.
-* Integration tests against Exasol Personal.
-* Client smoke tests demonstrating that DbVisualizer can connect through the protocol server and reach Exasol.
-* Linting and formatting for the chosen runtime.
+Integration verification also uses:
+
+```bash
+exapump sql --profile nc-personal-2 "SELECT 1"
+```
 
 ## Project Structure
 

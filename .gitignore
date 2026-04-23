@@ -8,5 +8,6 @@ __pycache__/
 venv/
 dist/
 build/
+target/
 config/local.toml
 .codex

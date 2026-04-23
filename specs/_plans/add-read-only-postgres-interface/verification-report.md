@@ -2,101 +2,104 @@
 
 ## Summary
 
-Implemented the first prototype scaffold for the read-only PostgreSQL interface:
+Reimplemented the prototype as a Rust binary using the `pgwire` crate instead
+of the direct Python wire-protocol server. The active implementation now
+provides:
 
-* PostgreSQL startup handling with cleartext password authentication.
-* Client credential passthrough into an Exasol `pyexasol` session.
-* Configurable SQL preprocessor session initialization.
-* Simple Query protocol support for read-only DQL result sets.
-* Explicit PostgreSQL-style errors for unsupported SQL and protocol behavior.
+* PostgreSQL startup with cleartext password authentication.
+* One direct Exasol WebSocket session per PostgreSQL client connection.
+* Exasol TLS support with strict validation, SHA-256 certificate fingerprint
+  pinning, and a development-only `validate_certificate = false` mode.
+* Configurable Exasol session initialization for the database-side SQL
+  preprocessor.
+* Simple Query and basic Extended Query support through `pgwire`.
+* PostgreSQL-style row descriptions, data rows, command completions, errors, and
+  ReadyForQuery handling.
 * Read-only statement policy separated from Exasol execution.
-* Sample Exasol data SQL and an `exapump` setup helper.
-* Runtime config example, systemd unit template, smoke-test docs, and tests.
+* Local compatibility handling for common PostgreSQL client session commands and
+  transaction wrappers.
+* Multi-statement Simple Query splitting, with execution stopped after the first
+  error response.
+* Explicit rejection for DML, DDL, prepared statement parameters, and
+  multi-statement Extended Query Parse payloads.
+
+SQL dialect translation remains inside Exasol through
+`sql/exasol_sql_preprocessor.sql`; the gateway does not run `sqlglot` as an
+external application.
 
 ## Changed Files
 
-* `pyproject.toml`
+* `Cargo.toml`
+* `Cargo.lock`
 * `README.md`
+* `.gitignore`
 * `config/example.toml`
-* `src/exa_postgres_interface/*`
-* `sql/sample_data.sql`
-* `sql/exasol_sql_preprocessor.sql`
-* `scripts/setup_sample_data.sh`
-* `packaging/exa-postgres-interface.service`
 * `docs/smoke-test.md`
-* `tests/*`
+* `packaging/exa-postgres-interface.service`
+* `src/config.rs`
+* `src/exasol.rs`
+* `src/main.rs`
+* `src/pg_server.rs`
+* `src/policy.rs`
+* `specs/mission.md`
 * `specs/_plans/add-read-only-postgres-interface/implementation-notes.md`
+* `specs/_plans/add-read-only-postgres-interface/protocol/read-only-query-path/spec.md`
+
+Removed the obsolete Python prototype package and Python unit tests so the
+repository has one active implementation path.
 
 ## Tests and Commands Run
 
-* `exapump sql --profile nc-personal "SELECT 1"` failed before implementation
-  verification because the sandbox could not resolve the configured Exasol host:
-  `Temporary failure in name resolution`.
-* `exapump sql --profile nc-personal-2 "SELECT 1"` reached the IP-based
-  profile but was blocked by sandbox network policy:
-  `Operation not permitted (os error 1)`.
-* A requested outside-sandbox retry for
-  `exapump sql --profile nc-personal-2 "SELECT 1"` was rejected by the harness:
-  `approval policy is UnlessTrusted; reject command`.
-* After full access was enabled, `exapump sql --profile nc-personal-2 "SELECT 1"`
-  reached Exasol and failed with a real server response:
-  `Only TLS connections are allowed. (SQL code: 08004)`.
-* `exapump sql --profile nc-personal "SELECT 1"` produced the same TLS-required
-  server response.
-* After `nc-personal-2` was recreated with TLS enabled,
-  `exapump sql --profile nc-personal-2 "SELECT 1"` passed and returned `1`.
-* `scripts/setup_sample_data.sh` passed with `nc-personal-2`, creating
-  `pg_demo.orders` and inserting four rows.
+* `rustup component add rustfmt` installed the formatter component for the local
+  Rust toolchain.
+* `cargo fmt` passed.
+* `cargo fmt --check` passed.
+* `cargo test` passed: 8 tests.
+* `cargo build --release` passed.
+* `git diff --check` passed.
+* `exapump sql --profile nc-personal-2 "SELECT 1"` passed and returned `1`.
+
+Earlier live database checks from this plan remain valid:
+
+* `scripts/setup_sample_data.sh` passed with `nc-personal-2`.
 * `exapump sql --profile nc-personal-2 < sql/exasol_sql_preprocessor.sql`
-  passed, installing the database-side Python preprocessor script.
+  passed, installing the database-side Python preprocessor.
 * The canonical PostgreSQL-flavored demo query passed in Exasol after activating
-  the database-side preprocessor in the same session:
-  `ALTER SESSION SET SQL_PREPROCESSOR_SCRIPT = pg_demo.pg_sql_preprocessor`.
-  Returned rows:
-  `1,2026-01-02,125.50`, `2,2026-01-03,210.00`, and
-  `4,2026-01-05,42.42`.
-* Added local acknowledgement for safe PostgreSQL client session commands such
-  as startup `SET` statements issued by PostgreSQL drivers and DbVisualizer.
-* `PYTHONPATH=src python -m unittest discover -s tests` passed:
-  21 tests ran successfully, including a TCP-level PostgreSQL startup,
-  password-authentication, and simple-query protocol test with a fake backend.
-* The canonical PostgreSQL demo query fails when sent directly to Exasol without
-  the preprocessor, first on PostgreSQL `::` casts and then on `ILIKE` after
-  `sqlglot` cast translation. This confirms the preprocessor must be activated
-  inside the Exasol session rather than handled in the gateway application.
+  the database-side preprocessor in the same session.
 
-Automated unit tests are expected to run with:
-
-```bash
-PYTHONPATH=src python -m unittest discover -s tests
-```
+`psql` smoke testing was not run in this environment because `psql` is not
+installed and no PostgreSQL client credentials were exported for gateway login.
+`docs/smoke-test.md` now includes an optional `psql` command for environments
+where the client tool is available.
 
 ## Spec Scenarios Covered
 
 Covered by implementation and unit tests:
 
-* Startup and cleartext password authentication path.
-* Client credentials are passed to the backend factory.
-* `SELECT 1` and other read-only DQL can flow through the simple-query path.
-* Row description, data row, command completion, and ready state messages are
-  encoded.
-* DML, DDL, transaction, session, and unknown statements are rejected by policy.
-* Rejected statements do not mutate gateway state and later read statements can
-  still execute.
-* Configuration identifies Exasol endpoint and preprocessor initialization SQL.
-* Sample data setup is repeatable and keeps credentials outside the repository.
+* Configuration loading and TLS policy defaults.
+* Exasol DSN fingerprint and `nocertcheck` handling.
+* Read/write/DDL/transaction statement classification.
+* Local handling for safe PostgreSQL driver session commands.
+* Local handling for common transaction wrappers.
+* Simple Query batch splitting for PostgreSQL protocol compatibility.
+
+Covered by build/manual verification:
+
+* The Rust binary builds in release mode.
+* The configured Exasol Personal profile `nc-personal-2` is reachable with TLS.
+* The Exasol-side SQL preprocessor and sample data path were previously verified
+  against the same profile.
 
 ## Known Gaps and Follow-Up Work
 
-* DbVisualizer smoke testing through the gateway still needs to be run manually.
-* End-to-end gateway-to-Exasol testing requires a temporary config and client
-  credentials; the live database-side setup has been verified with `exapump`.
-* The exact Exasol SQL preprocessor callback contract must be verified against
-  the target Exasol Personal version before treating `sql/exasol_sql_preprocessor.sql`
-  as final.
-* PostgreSQL extended query protocol is not implemented.
-* PostgreSQL metadata and system catalog compatibility for DbVisualizer browsing
-  is not implemented.
-* Transaction commands are explicitly rejected rather than mapped.
-* Packaging is a Python console script plus systemd template, not a native
-  static binary.
+* Manual DbVisualizer smoke testing through the Rust gateway still needs to be
+  run with user-supplied Exasol credentials.
+* `psql` smoke testing still needs to be run on a host with `psql` installed.
+* PostgreSQL system catalog and metadata compatibility for browsing are not
+  implemented.
+* Prepared statement parameters are not implemented.
+* Extended Query describe responses do not infer result schema before execution.
+* Transaction wrappers are client compatibility acknowledgements, not
+  Exasol-backed PostgreSQL transaction semantics.
+* Column values are currently returned as PostgreSQL text fields for broad
+  client compatibility; richer type mapping is future work.

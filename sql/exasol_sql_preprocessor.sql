@@ -44,6 +44,9 @@ PG_GET_VIEWDEF_PRETTY_RE = re.compile(
 PG_GET_EXPR_PRETTY_RE = re.compile(
     r"(?is)(?:pg_catalog\.)?pg_get_expr\s*\(\s*([^,]+?)\s*,\s*([^,]+?)\s*,\s*(?:true|false)\s*\)"
 )
+PG_GET_CONSTRAINTDEF_PRETTY_RE = re.compile(
+    r"(?is)(?:pg_catalog\.)?pg_get_constraintdef\s*\(\s*([^,]+?)\s*,\s*(?:true|false)\s*\)"
+)
 SPECIAL_CATALOG_OBJECTS_RE = re.compile(
     r"(?i)\bPG_CATALOG\.(PG_FOREIGN_SERVER|PG_FOREIGN_DATA_WRAPPER)\b"
 )
@@ -138,6 +141,7 @@ FUNCTION_REPLACEMENTS = {
     re.compile(r"(?i)(?<![\w.\"])\bpg_get_expr\s*\("): "PG_CATALOG.PG_GET_EXPR(",
     re.compile(r"(?i)(?<![\w.\"])\bpg_get_constraintdef\s*\("): "PG_CATALOG.PG_GET_CONSTRAINTDEF(",
     re.compile(r"(?i)(?<![\w.\"])\bpg_get_indexdef\s*\("): "PG_CATALOG.PG_GET_INDEXDEF(",
+    re.compile(r"(?i)(?<![\w.\"])\boidvectortypes\s*\("): "PG_CATALOG.OIDVECTORTYPES(",
     re.compile(r"(?i)(?<![\w.\"])\bpg_get_partkeydef\s*\("): "PG_CATALOG.PG_GET_PARTKEYDEF(",
     re.compile(r"(?i)(?<![\w.\"])\bpg_get_ruledef\s*\("): "PG_CATALOG.PG_GET_RULEDEF(",
     re.compile(r"(?i)(?<![\w.\"])\bpg_get_triggerdef\s*\("): "PG_CATALOG.PG_GET_TRIGGERDEF(",
@@ -230,6 +234,10 @@ def rewrite_pg_catalog(sql):
             match.group(1).strip(),
             match.group(2).strip(),
         ),
+        sql,
+    )
+    sql = PG_GET_CONSTRAINTDEF_PRETTY_RE.sub(
+        lambda match: "PG_CATALOG.PG_GET_CONSTRAINTDEF({})".format(match.group(1).strip()),
         sql,
     )
     sql = CURRENT_DATABASE_RE.sub("'exasol'", sql)

@@ -169,7 +169,7 @@ impl ExasolPgWireHandler {
                     .session_extensions()
                     .get::<SessionState>()
                     .ok_or_else(|| pg_error("08003", "Exasol session is not connected"))?;
-                let sql = sql.to_owned();
+                let sql = rewrite_exasol_edge_case_sql(sql);
                 let result = task::spawn_blocking(move || {
                     let mut session = state.exasol.lock().map_err(|_| {
                         ExasolError::Connection("Exasol session lock poisoned".to_owned())
@@ -591,6 +591,10 @@ fn rewrite_exasol_edge_case_sql(sql: &str) -> String {
         .trim_end_matches(';')
         .to_ascii_lowercase();
 
+    if normalized == "select collation_schema, collation_name from information_schema.collations" {
+        return "SELECT \"COLLATION_SCHEMA\", \"COLLATION_NAME\" FROM INFORMATION_SCHEMA.\"COLLATIONS\"".to_owned();
+    }
+
     if normalized
         == "select l.oid,l.* from pg_catalog.pg_foreign_server l"
     {
@@ -612,6 +616,68 @@ fn rewrite_exasol_edge_case_sql(sql: &str) -> String {
             "LEFT OUTER JOIN PG_CATALOG.PG_PROC p ON p.oid = l.fdwhandler"
         )
         .to_owned();
+    }
+
+    if normalized.contains(" from pg_catalog.pg_class as c ")
+        && normalized.contains(" left join pg_catalog.\"pg_foreign_server\" as fs ")
+        && normalized.contains(" c.relkind = cast('f' as char) ")
+    {
+        return sql
+            .replace("PG_CATALOG.\"PG_FOREIGN_SERVER\" AS fs", "PG_CATALOG.\"PG_FOREIGN_SERVER\" AS srv")
+            .replace(" fs.srvname AS ", " srv.srvname AS ")
+            .replace(" ft.ftserver = fs.oid", " ft.ftserver = srv.oid")
+            .replace(" fs.srvname LIKE ", " srv.srvname LIKE ");
+    }
+
+    if normalized.contains("array_agg(cast(event_manipulation as long varchar))")
+        && normalized.contains("from pg_catalog.pg_trigger as trg")
+    {
+        return sql.replace(
+            "ARRAY_AGG(CAST(event_manipulation AS LONG VARCHAR))",
+            "LISTAGG(CAST(event_manipulation AS VARCHAR(2000000)), ', ') WITHIN GROUP (ORDER BY event_manipulation)",
+        );
+    }
+
+    if normalized.contains("from pg_catalog.pg_proc as p")
+        && normalized.contains("p.proargtypes[-1]")
+        && normalized.contains("cast('pg_catalog.cstring' as pg_catalog.regtype)")
+    {
+        return sql
+            .replace(
+                " WHERE p.prorettype <> CAST('PG_CATALOG.cstring' AS PG_CATALOG.regtype) AND (p.proargtypes[-1] IS NULL OR p.proargtypes[-1] <> CAST('PG_CATALOG.cstring' AS PG_CATALOG.regtype)) AND",
+                " WHERE",
+            )
+            .replace(
+                " WHERE p.prorettype <> CAST('PG_CATALOG.cstring' AS PG_CATALOG.regtype) AND (p.proargtypes[-1] IS NULL OR p.proargtypes[-1] <> CAST('PG_CATALOG.cstring' AS PG_CATALOG.regtype))",
+                " WHERE 1 = 1",
+            );
+    }
+
+    if normalized.contains("pg_catalog.pg_get_constraintdef(")
+        && normalized.contains(", true)")
+    {
+        return sql.replace(
+            "PG_CATALOG.pg_get_constraintdef(r.oid, TRUE)",
+            "PG_CATALOG.pg_get_constraintdef(r.oid)",
+        );
+    }
+
+    if normalized.contains("select p.proname as \"aggregate name\"")
+        && normalized.contains("case p.proargtypes[-1] when cast('pg_catalog.\"any\"' as pg_catalog.regtype)")
+    {
+        return sql.replace(
+            "CASE p.proargtypes[-1] WHEN CAST('PG_CATALOG.\"any\"' AS PG_CATALOG.regtype) THEN CAST('(all types)' AS PG_CATALOG.text) ELSE PG_CATALOG.format_type(p.proargtypes[-1], NULL) END",
+            "PG_CATALOG.oidvectortypes(p.proargtypes)",
+        );
+    }
+
+    if normalized.contains("select pg_catalog.format_type(t.oid, null) as \"type name\"")
+        && normalized.contains("or (select c.relkind = 'c' from pg_catalog.pg_class as c where c.oid = t.typrelid)")
+    {
+        return sql.replace(
+            "(t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM PG_CATALOG.pg_class AS c WHERE c.oid = t.typrelid))",
+            "(t.typrelid = 0)",
+        );
     }
 
     let user_mappings_prefix = concat!(
@@ -1150,6 +1216,61 @@ mod tests {
         assert!(rewritten.contains("PG_CATALOG.PG_USER_MAPPINGS"));
         assert!(rewritten.contains("PG_CATALOG.\"PG_FOREIGN_SERVER\""));
         assert!(rewritten.contains("WHERE fs.oid = 42"));
+    }
+
+    #[test]
+    fn rewrites_collations_projection() {
+        let sql = "SELECT COLLATION_SCHEMA, COLLATION_NAME FROM INFORMATION_SCHEMA.COLLATIONS";
+        let rewritten = rewrite_exasol_edge_case_sql(sql);
+        assert_eq!(
+            rewritten,
+            "SELECT \"COLLATION_SCHEMA\", \"COLLATION_NAME\" FROM INFORMATION_SCHEMA.\"COLLATIONS\""
+        );
+    }
+
+    #[test]
+    fn rewrites_trigger_array_agg() {
+        let sql = "SELECT ARRAY_AGG(CAST(event_manipulation AS LONG VARCHAR)) FROM pg_catalog.pg_trigger AS trg";
+        let rewritten = rewrite_exasol_edge_case_sql(sql);
+        assert!(rewritten.contains("LISTAGG("));
+        assert!(!rewritten.contains("ARRAY_AGG("));
+    }
+
+    #[test]
+    fn rewrites_foreign_table_browser_query() {
+        let sql = "SELECT c.relname AS \"Name\", n.nspname AS \"Schema\", fs.srvname AS \"Foreign Server\", ft.ftoptions AS \"Options\" FROM PG_CATALOG.PG_CLASS AS c LEFT JOIN PG_CATALOG.PG_NAMESPACE AS n ON n.oid = c.relnamespace LEFT JOIN PG_CATALOG.PG_FOREIGN_TABLE AS ft ON ft.ftrelid = c.oid LEFT JOIN PG_CATALOG.\"PG_FOREIGN_SERVER\" AS fs ON ft.ftserver = fs.oid WHERE c.relkind = CAST('f' AS CHAR) AND fs.srvname LIKE '%'";
+        let rewritten = rewrite_exasol_edge_case_sql(sql);
+        assert!(rewritten.contains("PG_CATALOG.\"PG_FOREIGN_SERVER\" AS srv"));
+        assert!(rewritten.contains("srv.srvname AS \"Foreign Server\""));
+        assert!(rewritten.contains("ft.ftserver = srv.oid"));
+        assert!(rewritten.contains("srv.srvname LIKE '%'"));
+    }
+
+    #[test]
+    fn rewrites_proc_listing_cstring_filter() {
+        let sql = "SELECT p.proname FROM PG_CATALOG.PG_PROC AS p WHERE p.prorettype <> CAST('PG_CATALOG.cstring' AS PG_CATALOG.regtype) AND (p.proargtypes[-1] IS NULL OR p.proargtypes[-1] <> CAST('PG_CATALOG.cstring' AS PG_CATALOG.regtype)) AND p.prokind = 'p'";
+        let rewritten = rewrite_exasol_edge_case_sql(sql);
+        assert!(!rewritten.contains("p.proargtypes[-1]"));
+        assert!(!rewritten.contains("PG_CATALOG.regtype"));
+        assert!(rewritten.contains("WHERE p.prokind = 'p'"));
+    }
+
+    #[test]
+    fn rewrites_constraintdef_pretty_call() {
+        let sql = "SELECT PG_CATALOG.pg_get_constraintdef(r.oid, TRUE) FROM PG_CATALOG.pg_constraint AS r";
+        let rewritten = rewrite_exasol_edge_case_sql(sql);
+        assert_eq!(
+            rewritten,
+            "SELECT PG_CATALOG.pg_get_constraintdef(r.oid) FROM PG_CATALOG.pg_constraint AS r"
+        );
+    }
+
+    #[test]
+    fn rewrites_pg_type_scalar_subquery_filter() {
+        let sql = "SELECT PG_CATALOG.format_type(t.oid, NULL) AS \"Type Name\" FROM PG_CATALOG.pg_type AS t WHERE (t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM PG_CATALOG.pg_class AS c WHERE c.oid = t.typrelid))";
+        let rewritten = rewrite_exasol_edge_case_sql(sql);
+        assert!(rewritten.contains("(t.typrelid = 0)"));
+        assert!(!rewritten.contains("SELECT c.relkind = 'c'"));
     }
 
     #[test]

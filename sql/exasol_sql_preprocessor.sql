@@ -169,6 +169,36 @@ JOIN_PREFIX_RE = re.compile(
     % "|".join(CATALOG_RELATIONS)
 )
 
+def rewrite_known_metadata_query(sql):
+    normalized = " ".join(sql.split()).lower()
+    if (
+        "from pg_catalog.pg_trigger" in normalized
+        and "information_schema.triggers" in normalized
+        and "array_agg(" in normalized
+    ):
+        return """
+SELECT
+    trigger_name AS "Trigger Name",
+    trigger_catalog AS "Trigger Catalog",
+    trigger_schema AS "Trigger Schema",
+    CAST(NULL AS VARCHAR(2000000)) AS "Event Manipulation",
+    action_orientation AS "Action Orientation",
+    action_condition AS "Action Condition",
+    action_statement AS "Action Statement",
+    CAST(NULL AS VARCHAR(2000000)) AS "Procedure Name",
+    CAST(NULL AS DECIMAL(18,0)) AS "proc_oid",
+    action_timing AS "Condition Timing",
+    event_object_catalog AS "Event Object Catalog",
+    event_object_schema AS "Event Object Schema",
+    event_object_table AS "Event Object Table",
+    action_reference_old_table AS "Action ref Old Table",
+    action_reference_new_table AS "Action ref New Table",
+    CAST(NULL AS VARCHAR(32)) AS "Status"
+FROM information_schema.triggers
+WHERE 1 = 0
+"""
+    return sql
+
 
 def rewrite_catalog_relations(sql):
     def repl(match):
@@ -216,6 +246,7 @@ def rewrite_regclass_literals(sql):
 
 
 def rewrite_pg_catalog(sql):
+    sql = rewrite_known_metadata_query(sql)
     sql = rewrite_object_description(sql)
     sql = PG_IDENTIFY_OBJECT_IDENTITY_RE.sub(
         lambda match: "PG_CATALOG.PG_IDENTIFY_OBJECT({}, {}, {})".format(
@@ -256,6 +287,36 @@ def rewrite_pg_catalog(sql):
         sql = pattern.sub(replacement, sql)
     return sql
 
+def rewrite_sqlglot_edge_cases(sql):
+    sql = sql.replace(
+        'PG_CATALOG."PG_FOREIGN_SERVER" AS fs',
+        'PG_CATALOG."PG_FOREIGN_SERVER" AS srv',
+    )
+    sql = sql.replace(" fs.srvname AS ", " srv.srvname AS ")
+    sql = sql.replace(" ft.ftserver = fs.oid", " ft.ftserver = srv.oid")
+    sql = sql.replace(" fs.srvname LIKE ", " srv.srvname LIKE ")
+    sql = sql.replace(
+        "ARRAY_AGG(CAST(event_manipulation AS LONG VARCHAR))",
+        "LISTAGG(CAST(event_manipulation AS VARCHAR(2000000)), ', ') WITHIN GROUP (ORDER BY event_manipulation)",
+    )
+    sql = sql.replace(
+        " WHERE p.prorettype <> CAST('PG_CATALOG.cstring' AS PG_CATALOG.regtype) AND (p.proargtypes[-1] IS NULL OR p.proargtypes[-1] <> CAST('PG_CATALOG.cstring' AS PG_CATALOG.regtype)) AND",
+        " WHERE",
+    )
+    sql = sql.replace(
+        " WHERE p.prorettype <> CAST('PG_CATALOG.cstring' AS PG_CATALOG.regtype) AND (p.proargtypes[-1] IS NULL OR p.proargtypes[-1] <> CAST('PG_CATALOG.cstring' AS PG_CATALOG.regtype))",
+        " WHERE 1 = 1",
+    )
+    sql = sql.replace(
+        "CASE p.proargtypes[-1] WHEN CAST('PG_CATALOG.\"any\"' AS PG_CATALOG.regtype) THEN CAST('(all types)' AS PG_CATALOG.text) ELSE PG_CATALOG.format_type(p.proargtypes[-1], NULL) END",
+        "PG_CATALOG.OIDVECTORTYPES(p.proargtypes)",
+    )
+    sql = sql.replace(
+        "(t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM PG_CATALOG.pg_class AS c WHERE c.oid = t.typrelid))",
+        "(t.typrelid = 0)",
+    )
+    return sql
+
 def rewrite_ilike(sql):
     return ILIKE_RE.sub(
         lambda match: "UPPER({}) LIKE UPPER({})".format(match.group(1), match.group(2)),
@@ -267,6 +328,7 @@ def adapter_call(sql_statement):
         import sqlglot
         rewritten = rewrite_pg_catalog(sql_statement)
         translated = sqlglot.transpile(rewritten, read="postgres", write="exasol")[0]
+        translated = rewrite_sqlglot_edge_cases(translated)
         return rewrite_ilike(translated)
     except Exception as exc:
         raise Exception("PostgreSQL-to-Exasol SQL translation failed: " + str(exc))

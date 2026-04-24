@@ -172,6 +172,68 @@ JOIN_PREFIX_RE = re.compile(
 def rewrite_known_metadata_query(sql):
     normalized = " ".join(sql.split()).lower()
     if (
+        "from pg_constraint" in normalized
+        and "lateral unnest" in normalized
+        and "array_agg(col.attname" in normalized
+    ):
+        schema_filter = "1 = 1"
+        table_filter = "1 = 1"
+        schema_match = re.search(r"(?is)\bsch\.nspname\s+LIKE\s+('(?:''|[^'])*')", sql)
+        table_match = re.search(r"(?is)\btbl\.relname\s+LIKE\s+('(?:''|[^'])*')", sql)
+        if schema_match:
+            schema_filter = "C.CONSTRAINT_SCHEMA LIKE {}".format(schema_match.group(1))
+        if table_match:
+            table_filter = "C.CONSTRAINT_TABLE LIKE {}".format(table_match.group(1))
+        return """
+WITH CONSTRAINT_COLUMNS AS (
+    SELECT
+        CONSTRAINT_SCHEMA,
+        CONSTRAINT_TABLE,
+        CONSTRAINT_NAME,
+        GROUP_CONCAT(COLUMN_NAME ORDER BY COALESCE(ORDINAL_POSITION, 0) SEPARATOR ',') AS COLUMNS,
+        MAX(REFERENCED_SCHEMA) AS FOREIGN_SCHEMA_NAME,
+        MAX(REFERENCED_TABLE) AS FOREIGN_TABLE_NAME,
+        GROUP_CONCAT(REFERENCED_COLUMN ORDER BY COALESCE(ORDINAL_POSITION, 0) SEPARATOR ',') AS FOREIGN_COLUMNS
+    FROM SYS.EXA_DBA_CONSTRAINT_COLUMNS
+    GROUP BY CONSTRAINT_SCHEMA, CONSTRAINT_TABLE, CONSTRAINT_NAME
+)
+SELECT
+    C.CONSTRAINT_NAME AS constraint_name,
+    CASE
+        WHEN C.CONSTRAINT_TYPE = 'PRIMARY KEY' THEN 'Primary Key'
+        WHEN C.CONSTRAINT_TYPE = 'FOREIGN KEY' THEN 'Foreign Key'
+        WHEN C.CONSTRAINT_TYPE = 'NOT NULL' THEN 'Check'
+        ELSE C.CONSTRAINT_TYPE
+    END AS constraint_type,
+    C.CONSTRAINT_SCHEMA AS "schema_name",
+    C.CONSTRAINT_TABLE AS "table_name",
+    CC.COLUMNS AS "columns",
+    CC.FOREIGN_SCHEMA_NAME AS "foreign_schema_name",
+    CC.FOREIGN_TABLE_NAME AS "foreign_table_name",
+    CC.FOREIGN_COLUMNS AS "foreign_columns",
+    CASE
+        WHEN C.CONSTRAINT_TYPE = 'PRIMARY KEY'
+            THEN 'PRIMARY KEY (' || COALESCE(CC.COLUMNS, '') || ')'
+        WHEN C.CONSTRAINT_TYPE = 'FOREIGN KEY'
+            THEN 'FOREIGN KEY (' || COALESCE(CC.COLUMNS, '') || ') REFERENCES '
+                 || COALESCE(CC.FOREIGN_SCHEMA_NAME, '') || '.'
+                 || COALESCE(CC.FOREIGN_TABLE_NAME, '') || '('
+                 || COALESCE(CC.FOREIGN_COLUMNS, '') || ')'
+        WHEN C.CONSTRAINT_TYPE = 'NOT NULL'
+            THEN COALESCE(CC.COLUMNS, '') || ' IS NOT NULL'
+        ELSE C.CONSTRAINT_TYPE
+    END AS definition
+FROM SYS.EXA_DBA_CONSTRAINTS C
+LEFT JOIN CONSTRAINT_COLUMNS CC
+  ON CC.CONSTRAINT_SCHEMA = C.CONSTRAINT_SCHEMA
+ AND CC.CONSTRAINT_TABLE = C.CONSTRAINT_TABLE
+ AND CC.CONSTRAINT_NAME = C.CONSTRAINT_NAME
+WHERE {schema_filter}
+  AND {table_filter}
+ORDER BY "schema_name", "table_name"
+""".format(schema_filter=schema_filter, table_filter=table_filter)
+
+    if (
         "from pg_catalog.pg_trigger" in normalized
         and "information_schema.triggers" in normalized
         and "array_agg(" in normalized
@@ -315,6 +377,18 @@ def rewrite_sqlglot_edge_cases(sql):
         "(t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM PG_CATALOG.pg_class AS c WHERE c.oid = t.typrelid))",
         "(t.typrelid = 0)",
     )
+    sql = sql.replace(
+        "ON (C.TABLE_CATALOG, C.TABLE_SCHEMA, C.TABLE_NAME, 'TABLE', C.DTD_IDENTIFIER) = (E.OBJECT_CATALOG, E.OBJECT_SCHEMA, E.OBJECT_NAME, E.OBJECT_TYPE, E.DTD_IDENTIFIER)",
+        "ON C.TABLE_CATALOG = E.OBJECT_CATALOG AND C.TABLE_SCHEMA = E.OBJECT_SCHEMA AND C.TABLE_NAME = E.OBJECT_NAME AND E.OBJECT_TYPE = 'TABLE' AND C.DTD_IDENTIFIER = E.DTD_IDENTIFIER",
+    )
+    sql = sql.replace(
+        "ON (C.TABLE_CATALOG, C.TABLE_SCHEMA, C.TABLE_NAME, C.COLUMN_NAME, 'column_name') = (CO.TABLE_CATALOG, CO.TABLE_SCHEMA, CO.TABLE_NAME, CO.COLUMN_NAME, CO.OPTION_NAME)",
+        "ON C.TABLE_CATALOG = CO.TABLE_CATALOG AND C.TABLE_SCHEMA = CO.TABLE_SCHEMA AND C.TABLE_NAME = CO.TABLE_NAME AND C.COLUMN_NAME = CO.COLUMN_NAME AND CO.OPTION_NAME = 'column_name'",
+    )
+    sql = sql.replace(
+        "CO.OPTION_VALUE AS COLUMN_OPTION, C.ORDINAL_POSITION, C.IS_IDENTITY",
+        "CO.OPTION_VALUE AS COLUMN_OPTION, C.ORDINAL_POSITION AS ORDINAL_POSITION_DUP, C.IS_IDENTITY",
+    )
     return sql
 
 def rewrite_ilike(sql):
@@ -325,6 +399,9 @@ def rewrite_ilike(sql):
 
 def adapter_call(sql_statement):
     try:
+        known_metadata_query = rewrite_known_metadata_query(sql_statement)
+        if known_metadata_query != sql_statement:
+            return rewrite_ilike(known_metadata_query)
         import sqlglot
         rewritten = rewrite_pg_catalog(sql_statement)
         translated = sqlglot.transpile(rewritten, read="postgres", write="exasol")[0]

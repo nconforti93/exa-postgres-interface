@@ -144,6 +144,41 @@ TABLE_NAME=...
 COLUMN_NAME=...
 ```
 
+## JDBC Compatibility Suite
+
+The repository also includes a broader compatibility suite that sweeps all
+public `DatabaseMetaData` methods and runs persona query corpora for
+DbVisualizer, pgJDBC, Metabase, DBeaver, and analyst-oriented PostgreSQL
+`SELECT` stress cases.
+
+```bash
+scripts/run_jdbc_compatibility_suite.sh \
+  'jdbc:postgresql://127.0.0.1:15432/exasol?preferQueryMode=extended' \
+  sys \
+  'EXASOL_PASSWORD'
+```
+
+See [docs/client-compatibility-test-framework.md](docs/client-compatibility-test-framework.md)
+for persona details and report semantics.
+
+## Gateway Vs Direct Exasol Benchmark
+
+To compare warm-query latency through the PostgreSQL gateway against a direct
+Exasol JDBC connection, run:
+
+```bash
+scripts/run_gateway_vs_exasol_benchmark.sh \
+  'jdbc:postgresql://127.0.0.1:15432/exasol?preferQueryMode=extended' \
+  sys \
+  'EXASOL_PASSWORD' \
+  'jdbc:exa:127.0.0.1:8563' \
+  sys \
+  'EXASOL_PASSWORD'
+```
+
+The benchmark uses logically equivalent small and medium read-only query pairs
+and reports latency statistics plus the gateway/direct ratio.
+
 ## Optional DbVisualizer Query Smoke Test
 
 The PostgreSQL profile shipped with DbVisualizer issues these metadata queries

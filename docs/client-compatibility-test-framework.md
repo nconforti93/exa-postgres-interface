@@ -14,8 +14,9 @@ The framework has three layers:
   records pass/fail, SQLState, and result shape.
 * A persona query corpus with must-pass baseline probes plus exploratory probes
   drawn from real PostgreSQL clients and analytical SQL patterns.
-* A gateway-vs-direct Exasol latency benchmark for small and medium read-only
-  query pairs.
+* A gateway-vs-direct Exasol latency benchmark for small probes, result-set
+  transfer ladders, and heavier analytical queries that return either many rows
+  or only a single row.
 
 Current personas:
 
@@ -97,10 +98,17 @@ Useful benchmark options:
 --warmup=3
 --iterations=10
 --output=/tmp/exa-postgres-benchmark.txt
+--families=transfer-few-cols,transfer-many-cols,analytic,analytic-one-row
+--labels=transfer-many-cols-1000000
+--skip-validation
 ```
 
 The benchmark measures query latency on already-open JDBC connections. It does
 not measure connection-establishment time.
+
+`--skip-validation` is useful when you want a true first-execution timing on a
+fresh session and do not want the runner to execute the same SQL once before
+measurement.
 
 ## Reading The Report
 
@@ -122,6 +130,26 @@ The benchmark report prints, for each query pair:
 * gateway-over-direct ratio;
 * a deterministic result digest comparison to guard against comparing unlike
   results.
+
+## Performance Profile To Expect
+
+On the current benchmark host, the gateway showed three distinct regimes:
+
+* Tiny result sets: a roughly fixed `140-155 ms` overhead per query.
+* Large transfers: an additional payload-dependent penalty, with observed
+  gateway-over-direct ratios from about `1.11x` to `1.38x` on `1M-10M` row
+  transfers depending on row width.
+* Heavy compute with tiny results: near-direct timings. One-row analytical
+  workloads taking about `2.5s`, `5.6s`, and `20s` in Exasol stayed within a
+  few hundred milliseconds of direct JDBC.
+
+That means the gateway is not well described by a single rule such as
+"always adds 1-2 seconds" or "always costs 25%". The right mental model is:
+
+* small-query fixed tax;
+* transfer cost that scales with returned data volume;
+* little additional penalty when Exasol runtime dominates and only a few rows
+  come back.
 
 ## Likely Gap Areas
 

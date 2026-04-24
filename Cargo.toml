@@ -3,6 +3,7 @@ name = "exa-postgres-interface"
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
+default-run = "exa-postgres-interface"
 
 [dependencies]
 async-trait = "0.1"

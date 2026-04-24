@@ -37,6 +37,41 @@ Not implemented yet:
 * Real transaction semantic mapping to Exasol.
 * Broader client compatibility coverage and automated integration tests.
 
+## Performance Considerations
+
+This gateway adds measurable overhead compared with a direct Exasol JDBC
+connection. The effect is workload-dependent:
+
+* Small interactive queries with tiny result sets typically see a mostly fixed
+  gateway tax. On the current benchmark host this was about `140-155 ms` per
+  query, which made `SELECT 1` and similar probes look roughly `5x-7x` slower
+  than direct JDBC.
+* Large result transfers see an additional payload-dependent cost. In the
+  current benchmark runs, returning `1M-10M` rows through the gateway added
+  anywhere from about `11%` to `38%` wall-clock time depending on row count and
+  column width.
+* Long-running analytical queries that return very little data behave
+  differently. For one-row aggregation workloads taking about `2.5s`, `5.6s`,
+  and `20s` in Exasol, the observed gateway delta stayed within a few hundred
+  milliseconds. In that regime, the gateway behaved much more like a small
+  additive cost than a fixed percentage slowdown.
+
+Practical guidance:
+
+* Expect the gateway to be most visible for metadata browsing, BI tool
+  exploration, and other short round trips.
+* Expect bulk result export or wide result sets to pay an additional transfer
+  cost beyond the small-query tax.
+* Do not assume a query that takes `30s` in Exasol will become `37.5s` through
+  the gateway if it only returns a few rows. On the current test system, heavy
+  compute with tiny results stayed close to direct execution time.
+
+These numbers are environment-specific, not protocol constants. Re-run the
+benchmark in your target environment before treating them as acceptance
+criteria. See
+[docs/client-compatibility-test-framework.md](docs/client-compatibility-test-framework.md)
+for the benchmark harness and current workload shapes.
+
 ## Build
 
 ```bash
@@ -90,6 +125,17 @@ The EC2 security group must also allow inbound TCP `15432` from the client IP.
 
 ```bash
 cargo run -- --config config/local.toml
+```
+
+`cargo run` now defaults to the main gateway binary. The repository also
+contains a helper binary, `exasol_exec`, for applying and probing Exasol SQL
+directly during development.
+
+If you want to run a binary explicitly:
+
+```bash
+cargo run --bin exa-postgres-interface -- --config config/local.toml
+cargo run --bin exasol_exec -- --help
 ```
 
 Then connect a PostgreSQL client to the configured listen host and port.

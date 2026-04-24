@@ -539,7 +539,7 @@ impl ExasolPgWireHandler {
             .session_extensions()
             .get::<SessionState>()
             .ok_or_else(|| pg_error("08003", "Exasol session is not connected"))?;
-        let sql = sql.to_owned();
+        let sql = rewrite_exasol_edge_case_sql(sql);
         task::spawn_blocking(move || {
             let mut session = state
                 .exasol
@@ -581,6 +581,64 @@ impl ExasolPgWireHandler {
         }
         Ok(responses)
     }
+}
+
+fn rewrite_exasol_edge_case_sql(sql: &str) -> String {
+    let normalized = sql
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim_end_matches(';')
+        .to_ascii_lowercase();
+
+    if normalized
+        == "select l.oid,l.* from pg_catalog.pg_foreign_server l"
+    {
+        return concat!(
+            "SELECT l.oid, l.srvname, l.srvowner, l.srvfdw, l.srvtype, ",
+            "l.srvversion, l.srvacl, l.srvoptions ",
+            "FROM PG_CATALOG.\"PG_FOREIGN_SERVER\" l"
+        )
+        .to_owned();
+    }
+
+    if normalized
+        == "select l.oid,l.* from pg_catalog.pg_foreign_data_wrapper l left outer join pg_catalog.pg_proc p on p.oid=l.fdwhandler"
+    {
+        return concat!(
+            "SELECT l.oid, l.fdwname, l.fdwowner, l.fdwhandler, ",
+            "l.fdwvalidator, l.fdwacl, l.fdwoptions ",
+            "FROM PG_CATALOG.\"PG_FOREIGN_DATA_WRAPPER\" l ",
+            "LEFT OUTER JOIN PG_CATALOG.PG_PROC p ON p.oid = l.fdwhandler"
+        )
+        .to_owned();
+    }
+
+    let user_mappings_prefix = concat!(
+        "select distinct fs.srvname, case when rolname is null then 'public' else rolname end ",
+        "rolname, srvoptions, umoptions from pg_user_mappings um join pg_foreign_server fs ",
+        "on um.srvid = fs.oid left join pg_authid pa on um.umuser = pa.oid where fs.oid = "
+    );
+    if normalized.starts_with(user_mappings_prefix) && normalized.ends_with(" order by srvname") {
+        let oid = normalized
+            .trim_start_matches(user_mappings_prefix)
+            .trim_end_matches(" order by srvname")
+            .trim();
+        return concat!(
+            "SELECT DISTINCT fs.srvname, ",
+            "CASE WHEN rolname IS NULL THEN 'public' ELSE rolname END AS rolname, ",
+            "srvoptions, umoptions ",
+            "FROM PG_CATALOG.PG_USER_MAPPINGS um ",
+            "JOIN PG_CATALOG.\"PG_FOREIGN_SERVER\" fs ON um.srvid = fs.oid ",
+            "LEFT JOIN PG_CATALOG.PG_AUTHID pa ON um.umuser = pa.oid ",
+            "WHERE fs.oid = "
+        )
+        .to_owned()
+            + oid
+            + " ORDER BY srvname";
+    }
+
+    sql.to_owned()
 }
 
 #[async_trait]
@@ -1066,6 +1124,33 @@ fn split_simple_query(query: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rewrites_foreign_server_projection() {
+        let sql = "SELECT l.oid,l.* FROM pg_catalog.pg_foreign_server l";
+        let rewritten = rewrite_exasol_edge_case_sql(sql);
+        assert!(rewritten.contains("PG_CATALOG.\"PG_FOREIGN_SERVER\""));
+        assert!(rewritten.contains("l.srvoptions"));
+        assert!(!rewritten.contains("l.*"));
+    }
+
+    #[test]
+    fn rewrites_foreign_data_wrapper_projection() {
+        let sql = "SELECT l.oid,l.* FROM pg_catalog.pg_foreign_data_wrapper l LEFT OUTER JOIN pg_catalog.pg_proc p ON p.oid=l.fdwhandler";
+        let rewritten = rewrite_exasol_edge_case_sql(sql);
+        assert!(rewritten.contains("PG_CATALOG.\"PG_FOREIGN_DATA_WRAPPER\""));
+        assert!(rewritten.contains("LEFT OUTER JOIN PG_CATALOG.PG_PROC"));
+        assert!(rewritten.contains("l.fdwoptions"));
+    }
+
+    #[test]
+    fn rewrites_user_mappings_query_with_dynamic_oid() {
+        let sql = "select distinct fs.srvname, case when rolname is null then 'public' else rolname end rolname, srvoptions, umoptions from pg_user_mappings um join pg_foreign_server fs on um.srvid = fs.OID left join pg_authid pa on um.umuser = pa.OID where fs.OID = 42 ORDER BY srvname";
+        let rewritten = rewrite_exasol_edge_case_sql(sql);
+        assert!(rewritten.contains("PG_CATALOG.PG_USER_MAPPINGS"));
+        assert!(rewritten.contains("PG_CATALOG.\"PG_FOREIGN_SERVER\""));
+        assert!(rewritten.contains("WHERE fs.oid = 42"));
+    }
 
     #[test]
     fn splits_simple_query_batches() {

@@ -85,6 +85,48 @@ BEGIN
 END PG_STAT_GET_BLOCKS_HIT;
 /
 
+CREATE OR REPLACE FUNCTION PG_CATALOG.FORMAT_TYPE(
+    TYPE_OID DECIMAL(18,0),
+    TYPE_MOD DECIMAL(18,0)
+)
+RETURN VARCHAR(2000000)
+IS
+BEGIN
+    RETURN CASE
+        WHEN TYPE_OID = 16 THEN 'boolean'
+        WHEN TYPE_OID = 18 THEN '"char"'
+        WHEN TYPE_OID = 19 THEN 'name'
+        WHEN TYPE_OID = 20 THEN 'bigint'
+        WHEN TYPE_OID = 21 THEN 'smallint'
+        WHEN TYPE_OID = 22 THEN 'int2vector'
+        WHEN TYPE_OID = 23 THEN 'integer'
+        WHEN TYPE_OID = 25 THEN 'text'
+        WHEN TYPE_OID = 26 THEN 'oid'
+        WHEN TYPE_OID = 30 THEN 'oidvector'
+        WHEN TYPE_OID = 700 THEN 'real'
+        WHEN TYPE_OID = 701 THEN 'double precision'
+        WHEN TYPE_OID = 1042 AND TYPE_MOD IS NOT NULL AND TYPE_MOD > 4
+            THEN 'character(' || CAST(TYPE_MOD - 4 AS VARCHAR(40)) || ')'
+        WHEN TYPE_OID = 1042 THEN 'character'
+        WHEN TYPE_OID = 1043 AND TYPE_MOD IS NOT NULL AND TYPE_MOD > 4
+            THEN 'character varying(' || CAST(TYPE_MOD - 4 AS VARCHAR(40)) || ')'
+        WHEN TYPE_OID = 1043 THEN 'character varying'
+        WHEN TYPE_OID = 1082 THEN 'date'
+        WHEN TYPE_OID = 1114 THEN 'timestamp without time zone'
+        WHEN TYPE_OID = 1184 THEN 'timestamp with time zone'
+        WHEN TYPE_OID = 1700 AND TYPE_MOD IS NOT NULL AND TYPE_MOD > 4
+            THEN 'numeric('
+                || CAST(FLOOR((TYPE_MOD - 4) / 65536) AS VARCHAR(40))
+                || ','
+                || CAST(MOD(TYPE_MOD - 4, 65536) AS VARCHAR(40))
+                || ')'
+        WHEN TYPE_OID = 1700 THEN 'numeric'
+        WHEN TYPE_OID = 2249 THEN 'record'
+        ELSE '???'
+    END;
+END FORMAT_TYPE;
+/
+
 CREATE OR REPLACE VIEW PG_CATALOG.PG_DATABASE AS
 WITH BASE AS (
     SELECT

@@ -116,6 +116,7 @@ CATALOG_RELATIONS = [
 ]
 
 FUNCTION_REPLACEMENTS = {
+    re.compile(r"(?i)(?<![\w.\"])\bformat_type\s*\("): "PG_CATALOG.FORMAT_TYPE(",
     re.compile(r"(?i)(?<![\w.\"])\bpg_get_userbyid\s*\("): "PG_CATALOG.PG_GET_USERBYID(",
     re.compile(r"(?i)(?<![\w.\"])\bpg_get_expr\s*\("): "PG_CATALOG.PG_GET_EXPR(",
     re.compile(r"(?i)(?<![\w.\"])\bpg_get_constraintdef\s*\("): "PG_CATALOG.PG_GET_CONSTRAINTDEF(",

@@ -354,9 +354,8 @@ def rewrite_sqlglot_edge_cases(sql):
         'PG_CATALOG."PG_FOREIGN_SERVER" AS fs',
         'PG_CATALOG."PG_FOREIGN_SERVER" AS srv',
     )
-    sql = sql.replace(" fs.srvname AS ", " srv.srvname AS ")
-    sql = sql.replace(" ft.ftserver = fs.oid", " ft.ftserver = srv.oid")
-    sql = sql.replace(" fs.srvname LIKE ", " srv.srvname LIKE ")
+    if 'PG_CATALOG."PG_FOREIGN_SERVER" AS srv' in sql:
+        sql = re.sub(r"(?i)\bfs\.", "srv.", sql)
     sql = sql.replace(
         "ARRAY_AGG(CAST(event_manipulation AS LONG VARCHAR))",
         "LISTAGG(CAST(event_manipulation AS VARCHAR(2000000)), ', ') WITHIN GROUP (ORDER BY event_manipulation)",

@@ -50,6 +50,9 @@ PG_GET_CONSTRAINTDEF_PRETTY_RE = re.compile(
 SPECIAL_CATALOG_OBJECTS_RE = re.compile(
     r"(?i)\bPG_CATALOG\.(PG_FOREIGN_SERVER|PG_FOREIGN_DATA_WRAPPER)\b"
 )
+QUALIFIED_OPERATOR_RE = re.compile(
+    r"(?i)\s+OPERATOR\s*\(\s*(?:PG_CATALOG|pg_catalog)\s*\.\s*(<>|!=|<=|>=|=|<|>)\s*\)\s*"
+)
 
 CATALOG_RELATIONS = [
     # GENERATED_CATALOG_RELATIONS_START
@@ -307,8 +310,13 @@ def rewrite_regclass_literals(sql):
     return REGCLASS_LITERAL_RE.sub(repl, sql)
 
 
+def rewrite_qualified_operators(sql):
+    return QUALIFIED_OPERATOR_RE.sub(lambda match: " {} ".format(match.group(1)), sql)
+
+
 def rewrite_pg_catalog(sql):
     sql = rewrite_known_metadata_query(sql)
+    sql = rewrite_qualified_operators(sql)
     sql = rewrite_object_description(sql)
     sql = PG_IDENTIFY_OBJECT_IDENTITY_RE.sub(
         lambda match: "PG_CATALOG.PG_IDENTIFY_OBJECT({}, {}, {})".format(

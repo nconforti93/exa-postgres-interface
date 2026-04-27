@@ -438,6 +438,7 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "base64",
+ "byteorder",
  "futures",
  "native-tls",
  "pgwire",

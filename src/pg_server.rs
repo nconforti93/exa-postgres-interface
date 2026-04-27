@@ -3,6 +3,7 @@ use std::fmt::Debug;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use byteorder::ReadBytesExt;
 use futures::{Sink, SinkExt, StreamExt, stream};
 use pgwire::api::auth::{
     DefaultServerParameterProvider, StartupHandler, finish_authentication, protocol_negotiation,
@@ -937,8 +938,8 @@ impl QueryParser for GatewayQueryParser {
         Ok(sql.to_owned())
     }
 
-    fn get_parameter_types(&self, _stmt: &Self::Statement) -> PgWireResult<Vec<Type>> {
-        Ok(vec![])
+    fn get_parameter_types(&self, stmt: &Self::Statement) -> PgWireResult<Vec<Type>> {
+        Ok(infer_parameter_types(stmt))
     }
 
     fn get_result_schema(
@@ -1098,10 +1099,18 @@ fn render_portal_parameter(portal: &Portal<String>, idx: usize) -> PgWireResult<
     };
 
     if portal.parameter_format.is_binary(idx) {
-        return Err(pg_error(
-            "0A000",
-            "binary prepared statement parameters are not implemented",
-        ));
+        let Some(pg_type) = portal
+            .statement
+            .parameter_types
+            .get(idx)
+            .and_then(|pg_type| pg_type.as_ref())
+        else {
+            return Err(pg_error(
+                "08P01",
+                format!("missing parameter type for binary parameter {}", idx + 1),
+            ));
+        };
+        return render_binary_parameter(bytes, pg_type, idx);
     }
 
     let text = String::from_utf8(bytes.to_vec())
@@ -1111,6 +1120,105 @@ fn render_portal_parameter(portal: &Portal<String>, idx: usize) -> PgWireResult<
 
 fn sql_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
+}
+
+fn render_binary_parameter(bytes: &[u8], pg_type: &Type, idx: usize) -> PgWireResult<String> {
+    match *pg_type {
+        Type::BOOL => {
+            if bytes.len() != 1 {
+                return Err(invalid_binary_parameter(idx, "bool"));
+            }
+            Ok(if bytes[0] == 0 { "FALSE" } else { "TRUE" }.to_owned())
+        }
+        Type::INT2 => {
+            if bytes.len() != 2 {
+                return Err(invalid_binary_parameter(idx, "int2"));
+            }
+            let mut raw = bytes;
+            Ok(raw
+                .read_i16::<byteorder::BigEndian>()
+                .map_err(|_| invalid_binary_parameter(idx, "int2"))?
+                .to_string())
+        }
+        Type::INT4 => {
+            if bytes.len() != 4 {
+                return Err(invalid_binary_parameter(idx, "int4"));
+            }
+            let mut raw = bytes;
+            Ok(raw
+                .read_i32::<byteorder::BigEndian>()
+                .map_err(|_| invalid_binary_parameter(idx, "int4"))?
+                .to_string())
+        }
+        Type::INT8 => {
+            if bytes.len() != 8 {
+                return Err(invalid_binary_parameter(idx, "int8"));
+            }
+            let mut raw = bytes;
+            Ok(raw
+                .read_i64::<byteorder::BigEndian>()
+                .map_err(|_| invalid_binary_parameter(idx, "int8"))?
+                .to_string())
+        }
+        Type::TEXT | Type::VARCHAR | Type::BPCHAR | Type::NAME | Type::UNKNOWN => {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|_| invalid_binary_parameter(idx, pg_type.name()))?;
+            Ok(sql_string_literal(text))
+        }
+        _ => {
+            let text = std::str::from_utf8(bytes)
+                .map_err(|_| invalid_binary_parameter(idx, pg_type.name()))?;
+            Ok(sql_string_literal(text))
+        }
+    }
+}
+
+fn invalid_binary_parameter(idx: usize, type_name: &str) -> PgWireError {
+    pg_error(
+        "08P01",
+        format!(
+            "invalid binary prepared statement parameter {} for PostgreSQL type {}",
+            idx + 1,
+            type_name
+        ),
+    )
+}
+
+fn infer_parameter_types(sql: &str) -> Vec<Type> {
+    let Some(max_idx) = max_parameter_index(sql) else {
+        return Vec::new();
+    };
+    let mut types = vec![Type::TEXT; max_idx];
+    for idx in 1..=max_idx {
+        if parameter_appears_in_numeric_context(sql, idx) {
+            types[idx - 1] = Type::INT4;
+        }
+    }
+    types
+}
+
+fn max_parameter_index(sql: &str) -> Option<usize> {
+    static PARAM_RE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"\$(\d+)").unwrap());
+    PARAM_RE
+        .captures_iter(sql)
+        .filter_map(|cap| cap.get(1)?.as_str().parse::<usize>().ok())
+        .max()
+}
+
+fn parameter_appears_in_numeric_context(sql: &str, idx: usize) -> bool {
+    let placeholder = regex::escape(&format!("${idx}"));
+    let numeric_patterns = [
+        format!(r"(?i)(?:=|<>|!=|<|>|<=|>=)\s*{placeholder}\b"),
+        format!(r"(?i){placeholder}\s*(?:=|<>|!=|<|>|<=|>=)"),
+        format!(r"(?i)\bLIMIT\s+{placeholder}\b"),
+        format!(r"(?i)\bOFFSET\s+{placeholder}\b"),
+        format!(r"(?i)\bOBJID\s*=\s*{placeholder}\b"),
+        format!(r"(?i)\bOID\s*=\s*{placeholder}\b"),
+    ];
+    numeric_patterns
+        .iter()
+        .any(|pattern| regex::Regex::new(pattern).is_ok_and(|regex| regex.is_match(sql)))
 }
 
 fn error_info(error: PgWireError) -> ErrorInfo {
@@ -1360,6 +1468,34 @@ mod tests {
         let rewritten = rewrite_exasol_edge_case_sql(sql);
         assert!(rewritten.contains("(t.typrelid = 0)"));
         assert!(!rewritten.contains("SELECT c.relkind = 'c'"));
+    }
+
+    #[test]
+    fn infers_text_parameters_for_metabase_schema_filter() {
+        let sql = r#"SELECT "n"."nspname" FROM pg_catalog.pg_namespace n WHERE "n"."nspname" IN ($1, $2)"#;
+        assert_eq!(infer_parameter_types(sql), vec![Type::TEXT, Type::TEXT]);
+    }
+
+    #[test]
+    fn infers_numeric_parameters_for_limit_and_oid_filters() {
+        let sql = "SELECT * FROM pg_catalog.pg_class WHERE oid = $1 LIMIT $2";
+        assert_eq!(infer_parameter_types(sql), vec![Type::INT4, Type::INT4]);
+    }
+
+    #[test]
+    fn renders_binary_int_parameter() {
+        assert_eq!(
+            render_binary_parameter(&5_i32.to_be_bytes(), &Type::INT4, 0).unwrap(),
+            "5"
+        );
+    }
+
+    #[test]
+    fn renders_binary_text_parameter_as_sql_literal() {
+        assert_eq!(
+            render_binary_parameter(b"O'Reilly", &Type::TEXT, 0).unwrap(),
+            "'O''Reilly'"
+        );
     }
 
     #[test]

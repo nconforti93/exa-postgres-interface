@@ -47,6 +47,10 @@ enum GatewayResponse {
         columns: Vec<String>,
         rows: Vec<Vec<Option<String>>>,
     },
+    TypedQuery {
+        columns: Vec<GatewayColumn>,
+        rows: Vec<Vec<Option<String>>>,
+    },
     Execution {
         command: String,
         rows: Option<usize>,
@@ -61,6 +65,12 @@ enum GatewayResponse {
         sqlstate: String,
         message: String,
     },
+}
+
+#[derive(Clone, Debug)]
+struct GatewayColumn {
+    name: String,
+    data_type: Type,
 }
 
 pub struct ExasolPgWireHandler {
@@ -595,9 +605,7 @@ fn rewrite_exasol_edge_case_sql(sql: &str) -> String {
         return "SELECT \"COLLATION_SCHEMA\", \"COLLATION_NAME\" FROM INFORMATION_SCHEMA.\"COLLATIONS\"".to_owned();
     }
 
-    if normalized
-        == "select l.oid,l.* from pg_catalog.pg_foreign_server l"
-    {
+    if normalized == "select l.oid,l.* from pg_catalog.pg_foreign_server l" {
         return concat!(
             "SELECT l.oid, l.srvname, l.srvowner, l.srvfdw, l.srvtype, ",
             "l.srvversion, l.srvacl, l.srvoptions ",
@@ -623,7 +631,10 @@ fn rewrite_exasol_edge_case_sql(sql: &str) -> String {
         && normalized.contains(" c.relkind = cast('f' as char) ")
     {
         return sql
-            .replace("PG_CATALOG.\"PG_FOREIGN_SERVER\" AS fs", "PG_CATALOG.\"PG_FOREIGN_SERVER\" AS srv")
+            .replace(
+                "PG_CATALOG.\"PG_FOREIGN_SERVER\" AS fs",
+                "PG_CATALOG.\"PG_FOREIGN_SERVER\" AS srv",
+            )
             .replace(" fs.srvname AS ", " srv.srvname AS ")
             .replace(" ft.ftserver = fs.oid", " ft.ftserver = srv.oid")
             .replace(" fs.srvname LIKE ", " srv.srvname LIKE ");
@@ -653,9 +664,7 @@ fn rewrite_exasol_edge_case_sql(sql: &str) -> String {
             );
     }
 
-    if normalized.contains("pg_catalog.pg_get_constraintdef(")
-        && normalized.contains(", true)")
-    {
+    if normalized.contains("pg_catalog.pg_get_constraintdef(") && normalized.contains(", true)") {
         return sql.replace(
             "PG_CATALOG.pg_get_constraintdef(r.oid, TRUE)",
             "PG_CATALOG.pg_get_constraintdef(r.oid)",
@@ -663,7 +672,9 @@ fn rewrite_exasol_edge_case_sql(sql: &str) -> String {
     }
 
     if normalized.contains("select p.proname as \"aggregate name\"")
-        && normalized.contains("case p.proargtypes[-1] when cast('pg_catalog.\"any\"' as pg_catalog.regtype)")
+        && normalized.contains(
+            "case p.proargtypes[-1] when cast('pg_catalog.\"any\"' as pg_catalog.regtype)",
+        )
     {
         return sql.replace(
             "CASE p.proargtypes[-1] WHEN CAST('PG_CATALOG.\"any\"' AS PG_CATALOG.regtype) THEN CAST('(all types)' AS PG_CATALOG.text) ELSE PG_CATALOG.format_type(p.proargtypes[-1], NULL) END",
@@ -672,7 +683,9 @@ fn rewrite_exasol_edge_case_sql(sql: &str) -> String {
     }
 
     if normalized.contains("select pg_catalog.format_type(t.oid, null) as \"type name\"")
-        && normalized.contains("or (select c.relkind = 'c' from pg_catalog.pg_class as c where c.oid = t.typrelid)")
+        && normalized.contains(
+            "or (select c.relkind = 'c' from pg_catalog.pg_class as c where c.oid = t.typrelid)",
+        )
     {
         return sql.replace(
             "(t.typrelid = 0 OR (SELECT c.relkind = 'c' FROM PG_CATALOG.pg_class AS c WHERE c.oid = t.typrelid))",
@@ -958,17 +971,14 @@ impl PgWireServerHandlers for ExasolPgWireFactory {
 fn map_exasol_result(result: ExasolResult) -> PgWireResult<Vec<GatewayResponse>> {
     match result {
         ExasolResult::ResultSet { columns, rows } => {
-            let names = columns
+            let columns = columns
                 .into_iter()
-                .map(|column| {
-                    let _ = column.data_type;
-                    column.name
+                .map(|column| GatewayColumn {
+                    name: column.name,
+                    data_type: pg_type_for_exasol_data_type(&column.data_type),
                 })
                 .collect();
-            Ok(vec![GatewayResponse::Query {
-                columns: names,
-                rows,
-            }])
+            Ok(vec![GatewayResponse::TypedQuery { columns, rows }])
         }
         ExasolResult::RowCount(rows) => Ok(vec![GatewayResponse::Execution {
             command: "OK".to_owned(),
@@ -985,6 +995,13 @@ impl GatewayResponse {
                 .cloned()
                 .map(|name| FieldInfo::new(name, None, None, Type::TEXT, FieldFormat::Text))
                 .collect(),
+            GatewayResponse::TypedQuery { columns, .. } => columns
+                .iter()
+                .cloned()
+                .map(|column| {
+                    FieldInfo::new(column.name, None, None, column.data_type, FieldFormat::Text)
+                })
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -998,6 +1015,9 @@ impl TryFrom<GatewayResponse> for Response {
             GatewayResponse::Empty => Response::EmptyQuery,
             GatewayResponse::Query { columns, rows } => {
                 Response::Query(query_response(columns, rows)?)
+            }
+            GatewayResponse::TypedQuery { columns, rows } => {
+                Response::Query(query_response_typed(columns, rows)?)
             }
             GatewayResponse::Execution { command, rows } => {
                 let tag = if let Some(rows) = rows {
@@ -1111,9 +1131,25 @@ fn query_response(
     columns: Vec<String>,
     rows: Vec<Vec<Option<String>>>,
 ) -> PgWireResult<QueryResponse> {
+    query_response_typed(
+        columns
+            .into_iter()
+            .map(|name| GatewayColumn {
+                name,
+                data_type: Type::TEXT,
+            })
+            .collect(),
+        rows,
+    )
+}
+
+fn query_response_typed(
+    columns: Vec<GatewayColumn>,
+    rows: Vec<Vec<Option<String>>>,
+) -> PgWireResult<QueryResponse> {
     let fields = columns
         .into_iter()
-        .map(|name| FieldInfo::new(name, None, None, Type::TEXT, FieldFormat::Text))
+        .map(|column| FieldInfo::new(column.name, None, None, column.data_type, FieldFormat::Text))
         .collect::<Vec<_>>();
     let schema = Arc::new(fields);
     let schema_for_rows = schema.clone();
@@ -1128,6 +1164,59 @@ fn query_response(
     });
 
     Ok(QueryResponse::new(schema, row_stream))
+}
+
+fn pg_type_for_exasol_data_type(data_type: &serde_json::Value) -> Type {
+    let type_name = if let Some(name) = data_type.as_str() {
+        name.to_owned()
+    } else {
+        data_type
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| data_type.get("name").and_then(serde_json::Value::as_str))
+            .unwrap_or("VARCHAR")
+            .to_owned()
+    };
+    let upper = type_name.to_ascii_uppercase();
+    match upper.as_str() {
+        "BOOLEAN" | "BOOL" => Type::BOOL,
+        "DECIMAL" | "NUMERIC" => {
+            let scale = data_type
+                .get("scale")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(0);
+            let precision = data_type
+                .get("precision")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(36);
+            if scale == 0 && precision <= 9 {
+                Type::INT4
+            } else {
+                Type::NUMERIC
+            }
+        }
+        "DOUBLE" | "DOUBLE PRECISION" => Type::FLOAT8,
+        "DATE" => Type::DATE,
+        "TIMESTAMP" => Type::TIMESTAMP,
+        "TIMESTAMP WITH LOCAL TIME ZONE" | "TIMESTAMP WITH TIME ZONE" => Type::TIMESTAMPTZ,
+        "CHAR" | "VARCHAR" | "HASHTYPE" => Type::VARCHAR,
+        _ => {
+            let rendered = data_type
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| data_type.to_string());
+            match map_exasol_column_type(&rendered).oid {
+                16 => Type::BOOL,
+                1082 => Type::DATE,
+                1114 => Type::TIMESTAMP,
+                1184 => Type::TIMESTAMPTZ,
+                1700 => Type::NUMERIC,
+                700 | 701 => Type::FLOAT8,
+                1042 | 1043 => Type::VARCHAR,
+                _ => Type::TEXT,
+            }
+        }
+    }
 }
 
 fn map_exasol_connection_error(error: ExasolError) -> PgWireError {
@@ -1271,6 +1360,25 @@ mod tests {
         let rewritten = rewrite_exasol_edge_case_sql(sql);
         assert!(rewritten.contains("(t.typrelid = 0)"));
         assert!(!rewritten.contains("SELECT c.relkind = 'c'"));
+    }
+
+    #[test]
+    fn maps_exasol_decimal_result_type_to_postgres_numeric_type() {
+        let data_type = serde_json::json!({
+            "type": "DECIMAL",
+            "precision": 1,
+            "scale": 0
+        });
+        assert_eq!(pg_type_for_exasol_data_type(&data_type), Type::INT4);
+    }
+
+    #[test]
+    fn maps_exasol_varchar_result_type_to_postgres_varchar_type() {
+        let data_type = serde_json::json!({
+            "type": "VARCHAR",
+            "size": 2000
+        });
+        assert_eq!(pg_type_for_exasol_data_type(&data_type), Type::VARCHAR);
     }
 
     #[test]

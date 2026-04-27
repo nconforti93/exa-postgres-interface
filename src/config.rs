@@ -20,6 +20,10 @@ pub struct ServerConfig {
     pub listen_port: u16,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    #[serde(default)]
+    pub tls_cert_path: String,
+    #[serde(default)]
+    pub tls_key_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,6 +57,8 @@ impl Default for ServerConfig {
             listen_host: default_listen_host(),
             listen_port: default_listen_port(),
             log_level: default_log_level(),
+            tls_cert_path: String::new(),
+            tls_key_path: String::new(),
         }
     }
 }
@@ -75,6 +81,11 @@ impl AppConfig {
         let config: Self = toml::from_str(&content)?;
         if config.exasol.dsn.trim().is_empty() {
             return Err("exasol.dsn is required".into());
+        }
+        if config.server.tls_cert_path.trim().is_empty()
+            != config.server.tls_key_path.trim().is_empty()
+        {
+            return Err("server.tls_cert_path and server.tls_key_path must be set together".into());
         }
         Ok(config)
     }
@@ -113,6 +124,8 @@ mod tests {
             [server]
             listen_host = "0.0.0.0"
             listen_port = 15432
+            tls_cert_path = "/etc/exa-postgres-interface/server.crt"
+            tls_key_path = "/etc/exa-postgres-interface/server.key"
 
             [exasol]
             dsn = "127.0.0.1:8563"
@@ -127,6 +140,10 @@ mod tests {
         let config: AppConfig = toml::from_str(raw).unwrap();
 
         assert_eq!(config.server.listen_host, "0.0.0.0");
+        assert_eq!(
+            config.server.tls_cert_path,
+            "/etc/exa-postgres-interface/server.crt"
+        );
         assert_eq!(config.exasol.dsn, "127.0.0.1:8563");
         assert!(!config.exasol.validate_certificate);
         assert_eq!(config.translation.session_init_sql.len(), 1);

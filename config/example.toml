@@ -4,6 +4,10 @@
 listen_host = "127.0.0.1"
 listen_port = 15432
 log_level = "INFO"
+# Optional PostgreSQL wire-protocol TLS. Set both paths to accept PostgreSQL
+# SSLRequest connections from clients that require SSL.
+# tls_cert_path = "/etc/exa-postgres-interface/server.crt"
+# tls_key_path = "/etc/exa-postgres-interface/server.key"
 
 [exasol]
 dsn = "example-host.example.com:8563"

@@ -14,11 +14,14 @@ pgwire = { version = "0.39", features = ["server-api-aws-lc-rs"] }
 rand = "0.8"
 regex = "1"
 rsa = "0.9"
+rustls-pemfile = "2"
+rustls-pki-types = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "sync"] }
+tokio-rustls = "0.26"
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

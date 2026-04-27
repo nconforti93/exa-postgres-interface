@@ -85,6 +85,9 @@ desktop client, use this server binding:
 [server]
 listen_host = "0.0.0.0"
 listen_port = 15432
+# Optional: set both paths if PostgreSQL clients require SSL.
+# tls_cert_path = "/etc/exa-postgres-interface/server.crt"
+# tls_key_path = "/etc/exa-postgres-interface/server.key"
 ```
 
 `127.0.0.1` only listens on the EC2 instance loopback interface and is not

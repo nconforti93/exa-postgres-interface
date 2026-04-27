@@ -171,6 +171,11 @@ listen_host = "0.0.0.0"
 listen_port = 15432
 log_level = "INFO"
 
+# Optional PostgreSQL wire-protocol TLS. Enable this when clients require
+# sslmode=require or equivalent.
+# tls_cert_path = "/etc/exa-postgres-interface/server.crt"
+# tls_key_path = "/etc/exa-postgres-interface/server.key"
+
 [exasol]
 dsn = "EXASOL_HOST:8563"
 encryption = true
@@ -258,6 +263,10 @@ Example JDBC URL:
 ```text
 jdbc:postgresql://GATEWAY_HOST:15432/exasol?preferQueryMode=extended
 ```
+
+If the client has a separate SSL toggle, either disable client SSL or configure
+`server.tls_cert_path` and `server.tls_key_path` so the gateway accepts
+PostgreSQL SSLRequest startup packets.
 
 ## Sample Data
 

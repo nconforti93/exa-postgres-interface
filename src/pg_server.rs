@@ -1099,18 +1099,19 @@ fn render_portal_parameter(portal: &Portal<String>, idx: usize) -> PgWireResult<
     };
 
     if portal.parameter_format.is_binary(idx) {
-        let Some(pg_type) = portal
+        let pg_type = portal
             .statement
             .parameter_types
             .get(idx)
             .and_then(|pg_type| pg_type.as_ref())
-        else {
-            return Err(pg_error(
-                "08P01",
-                format!("missing parameter type for binary parameter {}", idx + 1),
-            ));
-        };
-        return render_binary_parameter(bytes, pg_type, idx);
+            .cloned()
+            .or_else(|| {
+                infer_parameter_types(&portal.statement.statement)
+                    .get(idx)
+                    .cloned()
+            })
+            .unwrap_or(Type::TEXT);
+        return render_binary_parameter(bytes, &pg_type, idx);
     }
 
     let text = String::from_utf8(bytes.to_vec())
@@ -1208,13 +1209,12 @@ fn max_parameter_index(sql: &str) -> Option<usize> {
 
 fn parameter_appears_in_numeric_context(sql: &str, idx: usize) -> bool {
     let placeholder = regex::escape(&format!("${idx}"));
+    let id_column = r#"(?:oid|objid|classoid|objoid|attnum|attrelid|atttypid|adrelid|adnum|relnamespace|reltype)"#;
     let numeric_patterns = [
-        format!(r"(?i)(?:=|<>|!=|<|>|<=|>=)\s*{placeholder}\b"),
-        format!(r"(?i){placeholder}\s*(?:=|<>|!=|<|>|<=|>=)"),
         format!(r"(?i)\bLIMIT\s+{placeholder}\b"),
         format!(r"(?i)\bOFFSET\s+{placeholder}\b"),
-        format!(r"(?i)\bOBJID\s*=\s*{placeholder}\b"),
-        format!(r"(?i)\bOID\s*=\s*{placeholder}\b"),
+        format!(r"(?i)\b{id_column}\b\s*(?:=|<>|!=|<|>|<=|>=)\s*{placeholder}\b"),
+        format!(r"(?i){placeholder}\s*(?:=|<>|!=|<|>|<=|>=)\s*\b{id_column}\b"),
     ];
     numeric_patterns
         .iter()

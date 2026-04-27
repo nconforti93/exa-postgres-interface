@@ -53,6 +53,14 @@ SPECIAL_CATALOG_OBJECTS_RE = re.compile(
 QUALIFIED_OPERATOR_RE = re.compile(
     r"(?i)\s+OPERATOR\s*\(\s*(?:PG_CATALOG|pg_catalog)\s*\.\s*(<>|!=|<=|>=|=|<|>)\s*\)\s*"
 )
+QUOTED_QUALIFIED_IDENTIFIER_RE = re.compile(
+    r'"([A-Za-z_][A-Za-z0-9_]*)"\s*\.\s*"([A-Za-z_][A-Za-z0-9_]*)"'
+)
+RELATION_ALIAS_RE = re.compile(
+    r'(?is)(\b(?:from|join|left(?:\s+outer)?\s+join|right(?:\s+outer)?\s+join|inner\s+join|full(?:\s+outer)?\s+join|cross\s+join)\s+'
+    r'(?:[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?|"[A-Za-z_][A-Za-z0-9_]*")'
+    r'(?:\s+AS)?)\s+"([A-Za-z_][A-Za-z0-9_]*)"'
+)
 
 CATALOG_RELATIONS = [
     # GENERATED_CATALOG_RELATIONS_START
@@ -114,6 +122,7 @@ CATALOG_RELATIONS = [
     "pg_shdescription",
     "pg_shseclabel",
     "pg_stat_activity",
+    "pg_stat_user_tables",
     "pg_statistic",
     "pg_statistic_ext",
     "pg_statistic_ext_data",
@@ -157,6 +166,7 @@ FUNCTION_REPLACEMENTS = {
     re.compile(r"(?i)(?<![\w.\"])\bpg_stat_get_blocks_hit\s*\("): "PG_CATALOG.PG_STAT_GET_BLOCKS_HIT(",
     re.compile(r"(?i)(?<![\w.\"])\bto_regclass\s*\("): "PG_CATALOG.TO_REGCLASS(",
     re.compile(r"(?i)(?<![\w.\"])\bshobj_description\s*\("): "PG_CATALOG.SHOBJ_DESCRIPTION(",
+    re.compile(r"(?i)(?<![\w.\"])\bcol_description\s*\("): "PG_CATALOG.COL_DESCRIPTION(",
     re.compile(r"(?i)(?<![\w.\"])\bhas_schema_privilege\s*\("): "PG_CATALOG.HAS_SCHEMA_PRIVILEGE(",
 }
 REGCLASS_OIDS = {
@@ -168,11 +178,32 @@ REGCLASS_OIDS = {
 }
 
 JOIN_PREFIX_RE = re.compile(
-    r"(?i)(\bfrom\s+|\bjoin\s+|\bleft\s+join\s+|\bright\s+join\s+|\binner\s+join\s+|\bfull\s+join\s+|\bcross\s+join\s+|,\s*)(%s)\b"
+    r'(?i)(\bfrom\s+|\bjoin\s+|\bleft(?:\s+outer)?\s+join\s+|\bright(?:\s+outer)?\s+join\s+|\binner\s+join\s+|\bfull(?:\s+outer)?\s+join\s+|\bcross\s+join\s+|,\s*)"?(%s)"?(?=\s|,|\)|$)'
     % "|".join(CATALOG_RELATIONS)
 )
 
+def normalize_ansi_quoted_postgres_identifiers(sql):
+    sql = QUOTED_QUALIFIED_IDENTIFIER_RE.sub(
+        lambda match: "{}.{}".format(match.group(1), match.group(2)),
+        sql,
+    )
+    sql = RELATION_ALIAS_RE.sub(
+        lambda match: "{} {}".format(match.group(1), match.group(2)),
+        sql,
+    )
+    return sql
+
+def extract_in_filter(sql, source_column, target_column):
+    pattern = re.compile(
+        r"(?is)\b{}\s+IN\s*\(([^)]*)\)".format(re.escape(source_column))
+    )
+    match = pattern.search(sql)
+    if not match:
+        return ""
+    return " AND {} IN ({})".format(target_column, match.group(1).strip())
+
 def rewrite_known_metadata_query(sql):
+    sql = normalize_ansi_quoted_postgres_identifiers(sql)
     normalized = " ".join(sql.split()).lower()
     if (
         normalized.startswith("with table_privileges as (")
@@ -198,6 +229,97 @@ FROM (
 ) t
 WHERE LOWER(object_schema) NOT LIKE 'pg\\_%'
   AND LOWER(object_schema) <> 'information_schema'
+"""
+    if (
+        "from information_schema.columns" in normalized
+        and "col_description" in normalized
+        and "union all" in normalized
+        and "from pg_catalog.pg_class" in normalized
+    ):
+        schema_filter = extract_in_filter(sql, "c.table_schema", "C.TABLE_SCHEMA")
+        table_filter = extract_in_filter(sql, "c.table_name", "C.TABLE_NAME")
+        return """
+SELECT
+    C.COLUMN_NAME AS "name",
+    CASE
+        WHEN COALESCE(C.UDT_SCHEMA, 'pg_catalog') IN ('public', 'pg_catalog') THEN C.UDT_NAME
+        ELSE '"' || C.UDT_SCHEMA || '"."' || C.UDT_NAME || '"'
+    END AS "database-type",
+    C.ORDINAL_POSITION - 1 AS "database-position",
+    C.TABLE_SCHEMA AS "table-schema",
+    C.TABLE_NAME AS "table-name",
+    CASE WHEN PK.COLUMN_NAME IS NULL THEN FALSE ELSE TRUE END AS "pk?",
+    CAST(NULL AS VARCHAR(2000000)) AS "field-comment",
+    CASE
+        WHEN (C.COLUMN_DEFAULT IS NULL OR LOWER(C.COLUMN_DEFAULT) = 'null')
+         AND C.IS_NULLABLE = 'NO'
+         AND C.IS_IDENTITY = 'NO'
+        THEN TRUE ELSE FALSE
+    END AS "database-required",
+    C.COLUMN_DEFAULT AS "database-default",
+    CASE WHEN C.IS_IDENTITY <> 'NO' THEN TRUE ELSE FALSE END AS "database-is-auto-increment",
+    CASE WHEN C.IS_GENERATED = 'ALWAYS' THEN TRUE ELSE FALSE END AS "database-is-generated",
+    CASE WHEN C.IS_NULLABLE = 'YES' THEN TRUE ELSE FALSE END AS "database-is-nullable"
+FROM INFORMATION_SCHEMA.COLUMNS C
+LEFT JOIN (
+    SELECT
+        TC.TABLE_SCHEMA,
+        TC.TABLE_NAME,
+        KC.COLUMN_NAME
+    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS TC
+    JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE KC
+      ON TC.CONSTRAINT_NAME = KC.CONSTRAINT_NAME
+     AND TC.TABLE_SCHEMA = KC.TABLE_SCHEMA
+     AND TC.TABLE_NAME = KC.TABLE_NAME
+    WHERE TC.CONSTRAINT_TYPE = 'PRIMARY KEY'
+) PK
+  ON C.TABLE_SCHEMA = PK.TABLE_SCHEMA
+ AND C.TABLE_NAME = PK.TABLE_NAME
+ AND C.COLUMN_NAME = PK.COLUMN_NAME
+WHERE REGEXP_INSTR(C.TABLE_SCHEMA, '^information_schema|catalog_history|pg_') = 0
+{schema_filter}
+{table_filter}
+ORDER BY "table-schema", "table-name", "database-position"
+""".format(schema_filter=schema_filter, table_filter=table_filter)
+    if (
+        "from pg_constraint" in normalized
+        and "fk-table-schema" in normalized
+        and "pk-table-schema" in normalized
+        and "any(c.conkey)" in normalized
+    ):
+        schema_filter = extract_in_filter(sql, "fk_ns.nspname", "CC.CONSTRAINT_SCHEMA")
+        table_filter = extract_in_filter(sql, "fk_table.relname", "CC.CONSTRAINT_TABLE")
+        return """
+SELECT
+    CC.CONSTRAINT_SCHEMA AS "fk-table-schema",
+    CC.CONSTRAINT_TABLE AS "fk-table-name",
+    CC.COLUMN_NAME AS "fk-column-name",
+    CC.REFERENCED_SCHEMA AS "pk-table-schema",
+    CC.REFERENCED_TABLE AS "pk-table-name",
+    CC.REFERENCED_COLUMN AS "pk-column-name"
+FROM SYS.EXA_DBA_CONSTRAINT_COLUMNS CC
+JOIN SYS.EXA_DBA_CONSTRAINTS C
+  ON C.CONSTRAINT_SCHEMA = CC.CONSTRAINT_SCHEMA
+ AND C.CONSTRAINT_TABLE = CC.CONSTRAINT_TABLE
+ AND C.CONSTRAINT_NAME = CC.CONSTRAINT_NAME
+WHERE C.CONSTRAINT_TYPE = 'FOREIGN KEY'
+  AND REGEXP_INSTR(CC.CONSTRAINT_SCHEMA, '^information_schema|catalog_history|pg_') = 0
+{schema_filter}
+{table_filter}
+ORDER BY "fk-table-schema", "fk-table-name"
+""".format(schema_filter=schema_filter, table_filter=table_filter)
+    if (
+        "information_schema._pg_expandarray" in normalized
+        and "pg_get_indexdef" in normalized
+        and "pg_catalog.pg_index" in normalized
+    ):
+        return """
+SELECT
+    CAST(NULL AS VARCHAR(128)) AS "table-schema",
+    CAST(NULL AS VARCHAR(128)) AS "table-name",
+    CAST(NULL AS VARCHAR(128)) AS "field-name"
+FROM (SELECT 1 AS DUMMY)
+WHERE 1 = 0
 """
     if (
         "from pg_constraint" in normalized
@@ -340,6 +462,7 @@ def rewrite_qualified_operators(sql):
 
 
 def rewrite_pg_catalog(sql):
+    sql = normalize_ansi_quoted_postgres_identifiers(sql)
     sql = rewrite_known_metadata_query(sql)
     sql = rewrite_qualified_operators(sql)
     sql = rewrite_object_description(sql)
@@ -431,11 +554,12 @@ def rewrite_ilike(sql):
 
 def adapter_call(sql_statement):
     try:
-        known_metadata_query = rewrite_known_metadata_query(sql_statement)
-        if known_metadata_query != sql_statement:
+        normalized_statement = normalize_ansi_quoted_postgres_identifiers(sql_statement)
+        known_metadata_query = rewrite_known_metadata_query(normalized_statement)
+        if known_metadata_query != normalized_statement:
             return rewrite_ilike(known_metadata_query)
         import sqlglot
-        rewritten = rewrite_pg_catalog(sql_statement)
+        rewritten = rewrite_pg_catalog(normalized_statement)
         translated = sqlglot.transpile(rewritten, read="postgres", write="exasol")[0]
         translated = rewrite_sqlglot_edge_cases(translated)
         return rewrite_ilike(translated)

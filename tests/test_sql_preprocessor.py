@@ -65,6 +65,141 @@ from table_privileges t
     assert "SYS.EXA_ALL_VIEWS" in translated
 
 
+def test_rewrites_metabase_describe_syncable_tables_query():
+    namespace = load_preprocessor_namespace()
+    sql = """
+SELECT
+  "n"."nspname" AS "schema",
+  "c"."relname" AS "name",
+  CASE
+    "c"."relkind"
+    WHEN 'r' THEN 'TABLE'
+    WHEN 'p' THEN 'PARTITIONED TABLE'
+    WHEN 'v' THEN 'VIEW'
+    WHEN 'f' THEN 'FOREIGN TABLE'
+    WHEN 'm' THEN 'MATERIALIZED VIEW'
+    ELSE NULL
+  END AS "type",
+  "d"."description" AS "description",
+  NULLIF("stat"."n_live_tup", 0) AS "estimated_row_count"
+FROM "pg_catalog"."pg_class" AS "c"
+INNER JOIN "pg_catalog"."pg_namespace" AS "n"
+  ON "c"."relnamespace" = "n"."oid"
+LEFT JOIN "pg_catalog"."pg_description" AS "d"
+  ON ("c"."oid" = "d"."objoid")
+ AND ("d"."objsubid" = 0)
+ AND ("d"."classoid" = 'pg_class'::regclass)
+LEFT JOIN "pg_stat_user_tables" AS "stat"
+  ON ("n"."nspname" = "stat"."schemaname")
+ AND ("c"."relname" = "stat"."relname")
+WHERE ("c"."relnamespace" = "n"."oid")
+  AND ("n"."nspname" !~ '^pg_')
+  AND ("n"."nspname" <> 'information_schema')
+  AND c.relkind in ('r', 'p', 'v', 'f', 'm')
+ORDER BY "type" ASC, "schema" ASC, "name" ASC
+"""
+    translated = namespace["adapter_call"](sql)
+    normalized = translated.upper()
+    assert '"pg_catalog"' not in translated
+    assert '"pg_stat_user_tables"' not in translated
+    assert "PG_CATALOG.PG_CLASS" in normalized
+    assert "PG_CATALOG.PG_NAMESPACE" in normalized
+    assert "PG_CATALOG.PG_DESCRIPTION" in normalized
+    assert "PG_CATALOG.PG_STAT_USER_TABLES" in normalized
+    assert "REGEXP_INSTR(n.nspname, '^pg_') = 0" in translated
+    assert ".REGEXP_INSTR" not in normalized
+
+
+def test_rewrites_metabase_describe_fields_query_family():
+    namespace = load_preprocessor_namespace()
+    sql = """
+SELECT c.column_name AS "name",
+       col_description(CAST(CAST(format('%I.%I', CAST(c.table_schema AS text), CAST(c.table_name AS text)) AS regclass) AS oid), c.ordinal_position) AS "field-comment"
+FROM information_schema.columns AS c
+LEFT JOIN (
+  SELECT tc.table_schema, tc.table_name, kc.column_name
+  FROM information_schema.table_constraints AS tc
+  JOIN information_schema.key_column_usage AS kc
+    ON tc.constraint_name = kc.constraint_name
+  WHERE tc.constraint_type = 'PRIMARY KEY'
+) AS pk
+  ON c.table_schema = pk.table_schema
+WHERE c.table_schema !~ '^information_schema|catalog_history|pg_'
+  AND c.table_schema IN ('NYC_UBER')
+UNION ALL
+SELECT pa.attname AS "name", NULL AS "field-comment"
+FROM pg_catalog.pg_class AS pc
+JOIN pg_catalog.pg_namespace AS pn ON pn.oid = pc.relnamespace
+JOIN pg_catalog.pg_attribute AS pa ON pa.attrelid = pc.oid
+JOIN pg_catalog.pg_type AS pt ON pt.oid = pa.atttypid
+JOIN pg_catalog.pg_namespace AS ptn ON ptn.oid = pt.typnamespace
+WHERE pc.relkind = 'm'
+ORDER BY "table-schema", "table-name", "database-position"
+"""
+    translated = namespace["adapter_call"](sql)
+    assert "COL_DESCRIPTION" not in translated.upper()
+    assert "INFORMATION_SCHEMA.COLUMNS C" in translated
+    assert '"database-type"' in translated
+    assert "C.TABLE_SCHEMA IN ('NYC_UBER')" in translated
+
+
+def test_rewrites_metabase_describe_fks_query_family():
+    namespace = load_preprocessor_namespace()
+    sql = """
+SELECT fk_ns.nspname AS "fk-table-schema",
+       fk_table.relname AS "fk-table-name",
+       fk_column.attname AS "fk-column-name",
+       pk_ns.nspname AS "pk-table-schema",
+       pk_table.relname AS "pk-table-name",
+       pk_column.attname AS "pk-column-name"
+FROM pg_constraint AS c
+JOIN pg_class AS fk_table ON c.conrelid = fk_table.oid
+JOIN pg_namespace AS fk_ns ON c.connamespace = fk_ns.oid
+JOIN pg_attribute AS fk_column ON c.conrelid = fk_column.attrelid
+JOIN pg_class AS pk_table ON c.confrelid = pk_table.oid
+JOIN pg_namespace AS pk_ns ON pk_table.relnamespace = pk_ns.oid
+JOIN pg_attribute AS pk_column ON c.confrelid = pk_column.attrelid
+WHERE fk_ns.nspname !~ '^information_schema|catalog_history|pg_'
+  AND c.contype = 'f'::char
+  AND fk_column.attnum = ANY(c.conkey)
+  AND pk_column.attnum = ANY(c.confkey)
+  AND fk_ns.nspname IN ('NYC_UBER')
+ORDER BY "fk-table-schema", "fk-table-name"
+"""
+    translated = namespace["adapter_call"](sql)
+    assert "SYS.EXA_DBA_CONSTRAINT_COLUMNS" in translated
+    assert "ANY(" not in translated
+    assert "CC.CONSTRAINT_SCHEMA IN ('NYC_UBER')" in translated
+
+
+def test_rewrites_metabase_describe_indexes_query_family():
+    namespace = load_preprocessor_namespace()
+    sql = """
+SELECT tmp."table-schema", tmp."table-name",
+       trim(BOTH '"' FROM pg_catalog.pg_get_indexdef(tmp.ci_oid, tmp.pos, false)) AS "field-name"
+FROM (
+  SELECT n.nspname AS "table-schema",
+         ct.relname AS "table-name",
+         ci.oid AS ci_oid,
+         (information_schema._pg_expandarray(i.indkey)).n AS pos
+  FROM pg_catalog.pg_class AS ct
+  JOIN pg_catalog.pg_namespace AS n ON ct.relnamespace = n.oid
+  JOIN pg_catalog.pg_index AS i ON ct.oid = i.indrelid
+  JOIN pg_catalog.pg_class AS ci ON ci.oid = i.indexrelid
+  WHERE pg_catalog.pg_get_expr(i.indpred, i.indrelid) IS NULL
+) AS tmp
+WHERE tmp.pos = 1
+"""
+    translated = namespace["adapter_call"](sql)
+    assert '"field-name"' in translated
+    assert "WHERE 1 = 0" in translated
+    assert "_PG_EXPANDARRAY" not in translated.upper()
+
+
 if __name__ == "__main__":
     test_rewrites_postgres_qualified_operator_syntax()
     test_rewrites_metabase_table_privileges_query()
+    test_rewrites_metabase_describe_syncable_tables_query()
+    test_rewrites_metabase_describe_fields_query_family()
+    test_rewrites_metabase_describe_fks_query_family()
+    test_rewrites_metabase_describe_indexes_query_family()

@@ -175,6 +175,31 @@ JOIN_PREFIX_RE = re.compile(
 def rewrite_known_metadata_query(sql):
     normalized = " ".join(sql.split()).lower()
     if (
+        normalized.startswith("with table_privileges as (")
+        and "has_any_column_privilege" in normalized
+        and "has_table_privilege" in normalized
+        and "from table_privileges" in normalized
+    ):
+        return """
+SELECT
+    CAST(NULL AS VARCHAR(128)) AS "role",
+    object_schema AS "schema",
+    object_name AS "table",
+    TRUE AS "update",
+    TRUE AS "select",
+    TRUE AS "insert",
+    TRUE AS "delete"
+FROM (
+    SELECT TABLE_SCHEMA AS object_schema, TABLE_NAME AS object_name
+    FROM SYS.EXA_ALL_TABLES
+    UNION
+    SELECT VIEW_SCHEMA AS object_schema, VIEW_NAME AS object_name
+    FROM SYS.EXA_ALL_VIEWS
+) t
+WHERE LOWER(object_schema) NOT LIKE 'pg\\_%'
+  AND LOWER(object_schema) <> 'information_schema'
+"""
+    if (
         "from pg_constraint" in normalized
         and "lateral unnest" in normalized
         and "array_agg(col.attname" in normalized

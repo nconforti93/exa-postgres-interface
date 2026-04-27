@@ -1,5 +1,13 @@
 # Smoke Test
 
+This document assumes the current architecture:
+
+* the gateway runs as the Rust `exa-postgres-interface` binary;
+* PostgreSQL dialect translation runs inside Exasol through
+  `PG_DEMO.PG_SQL_PREPROCESSOR`;
+* PostgreSQL catalog metadata is exposed by Exasol-side `PG_CATALOG` and
+  `INFORMATION_SCHEMA` compatibility schemas.
+
 ## Prepare Sample Data
 
 ```bash
@@ -10,7 +18,29 @@ The script uses `EXAPUMP_PROFILE=nc-personal-2` unless overridden.
 That profile must be configured with TLS enabled because the Exasol Personal
 endpoint rejects plaintext database connections.
 
-## Install SQL Preprocessor
+## Install Exasol-Side Compatibility SQL
+
+Install or refresh the PostgreSQL compatibility schemas:
+
+```bash
+python3 scripts/exasol_exec.py \
+  --dsn EXASOL_HOST:8563 \
+  --user sys \
+  --password 'EXASOL_PASSWORD' \
+  --file sql/postgres_catalog_compatibility.sql
+```
+
+Install or refresh the SQL preprocessor:
+
+```bash
+python3 scripts/exasol_exec.py \
+  --dsn EXASOL_HOST:8563 \
+  --user sys \
+  --password 'EXASOL_PASSWORD' \
+  --file sql/exasol_sql_preprocessor.sql
+```
+
+With `exapump`, the preprocessor install is equivalent to:
 
 ```bash
 exapump sql --profile nc-personal-2 < sql/exasol_sql_preprocessor.sql
@@ -19,7 +49,7 @@ exapump sql --profile nc-personal-2 < sql/exasol_sql_preprocessor.sql
 The gateway activates the installed preprocessor for each Exasol session using
 the configured `translation.session_init_sql` statement.
 
-## Start The Gateway
+## Start The Gateway Manually
 
 ```bash
 cp config/example.toml config/local.toml
@@ -60,6 +90,28 @@ listen_port = 15432
 `127.0.0.1` only listens on the EC2 instance loopback interface and is not
 reachable through the instance public IP.
 
+## Start The Gateway With systemd
+
+For a Linux deployment, build and install the release binary:
+
+```bash
+cargo build --release
+sudo useradd --system --home /opt/exa-postgres-interface --shell /usr/sbin/nologin exa-postgres-interface
+sudo mkdir -p /opt/exa-postgres-interface/bin /etc/exa-postgres-interface
+sudo install -m 0755 target/release/exa-postgres-interface /opt/exa-postgres-interface/bin/exa-postgres-interface
+sudo install -m 0640 -o root -g exa-postgres-interface config/example.toml /etc/exa-postgres-interface/config.toml
+sudo install -m 0644 packaging/exa-postgres-interface.service /etc/systemd/system/exa-postgres-interface.service
+```
+
+Edit `/etc/exa-postgres-interface/config.toml`, then start the service:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now exa-postgres-interface
+systemctl status exa-postgres-interface
+journalctl -u exa-postgres-interface -f
+```
+
 ## Connect DbVisualizer
 
 Use the PostgreSQL connector:
@@ -68,6 +120,11 @@ Use the PostgreSQL connector:
 * Port: configured `server.listen_port`
 * Database: any value accepted by the client UI
 * User/password: Exasol credentials
+
+DbVisualizer and DBeaver schema-browsing paths currently rely on the
+Exasol-side compatibility views and preprocessor rewrites. If a browser action
+fails, inspect `SYS.EXA_DBA_AUDIT_SQL` for the session and replay the original
+`/* preprocessing: ... */` SQL after enabling `PG_DEMO.PG_SQL_PREPROCESSOR`.
 
 ## Optional psql Smoke Test
 
@@ -179,16 +236,16 @@ scripts/run_gateway_vs_exasol_benchmark.sh \
 The benchmark uses logically equivalent small and medium read-only query pairs
 and reports latency statistics plus the gateway/direct ratio.
 
-## Optional DbVisualizer Query Smoke Test
+## Optional Metadata Query Smoke Test
 
-The PostgreSQL profile shipped with DbVisualizer issues these metadata queries
-during browsing. Run them through `psql` or another PostgreSQL client to verify
-the gateway path that DbVisualizer uses:
+Run representative metadata queries through `psql` or another PostgreSQL client
+to verify the catalog path used by JDBC tools:
 
 ```sql
 select * from pg_tables where schemaname != 'pg_catalog';
 select TABLE_NAME from INFORMATION_SCHEMA.TABLES where TABLE_CATALOG = 'exasol' and TABLE_SCHEMA = 'PG_DEMO' order by TABLE_NAME;
 select COLUMN_NAME from INFORMATION_SCHEMA.COLUMNS where TABLE_CATALOG = 'exasol' and TABLE_SCHEMA = 'PG_DEMO' and TABLE_NAME = 'ORDERS' order by COLUMN_NAME;
+select * from information_schema.table_constraints where table_schema = 'DEMO_FINANCE' and table_name = 'INVOICES';
 select * from pg_user;
 select * from pg_group;
 select * from pg_stat_activity;

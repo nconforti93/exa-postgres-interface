@@ -1,5 +1,12 @@
 # Verification Report: Add Read-Only PostgreSQL Interface
 
+Status update as of 2026-04-27: this report records the original Rust gateway
+implementation pass. Later commits expanded the Exasol-side metadata layer,
+added full documented PostgreSQL 18 catalog/information-schema relation and
+column surface, added DbVisualizer/DBeaver metadata rewrites in
+`PG_DEMO.PG_SQL_PREPROCESSOR`, added richer sample data, and updated deployment
+docs around systemd operation.
+
 ## Summary
 
 Reimplemented the prototype as a Rust binary using the `pgwire` crate instead
@@ -17,14 +24,10 @@ provides:
   ReadyForQuery handling.
 * Extended Query execution sends row descriptions before result tuples so
   PostgreSQL clients do not receive `DataRow` messages without field metadata.
-* Local compatibility responses for initial PostgreSQL catalog probes including
-  `pg_catalog.pg_database`, `pg_catalog.pg_namespace`, `pg_catalog.pg_roles`,
-  and `pg_catalog.pg_settings`.
-* Exasol-backed PostgreSQL metadata compatibility for the common JDBC and
-  DbVisualizer browse paths including `pg_namespace`, JDBC `getTables()`,
-  JDBC `getColumns()`, `pg_tables`, `information_schema.tables`,
-  `information_schema.columns`, `pg_user`, `pg_group`, `pg_stat_activity`,
-  and `pg_locks`.
+* Exasol-side PostgreSQL metadata compatibility for the documented PostgreSQL
+  catalog and information-schema relation/column surface, with real mappings
+  where Exasol has equivalent metadata and placeholders where PostgreSQL-only
+  features have no Exasol equivalent.
 * Read-only statement policy separated from Exasol execution.
 * Local compatibility handling for common PostgreSQL client session commands and
   transaction wrappers.
@@ -143,11 +146,9 @@ Covered by build/manual verification:
 
 ## Known Gaps and Follow-Up Work
 
-* Manual end-to-end DbVisualizer UI browsing still needs to be rerun against
-  the latest binary, even though the underlying profile SQL now passes.
-* PostgreSQL system catalog emulation is still targeted to the currently
-  observed JDBC and DbVisualizer queries; it is not a general-purpose
-  PostgreSQL catalog implementation.
+* PostgreSQL system catalog semantics are not fully emulated even though the
+  documented relation and column surface exists. Placeholder views and `NULL`
+  columns remain intentional for unsupported PostgreSQL-only features.
 * Binary prepared statement parameters are not implemented.
 * Extended Query describe responses do not infer result schema before execution.
 * Transaction wrappers are client compatibility acknowledgements, not

@@ -1,5 +1,10 @@
 # Feature: Read-Only PostgreSQL Query Path
 
+Status as of 2026-04-27: implemented for the current read-only capability
+scope. Simple Query and Extended Query paths work for row-returning statements,
+common session commands, transaction wrappers, JDBC metadata probes, and the
+catalog browser paths exercised so far.
+
 The protocol server SHALL provide the smallest PostgreSQL-compatible connection and query path needed for DbVisualizer to reach Exasol. The server SHALL preserve Exasol as the executing database and SHALL make unsupported PostgreSQL behavior explicit.
 
 The first supported statement scope is read-only DQL, but the protocol server SHOULD be designed as a session-oriented gateway that can add write-capable PostgreSQL behavior later without replacing the connection, authentication, session, or response-mapping architecture.

@@ -1,5 +1,10 @@
 # Feature: Client Compatibility Harness
 
+Status as of 2026-04-27: implemented. The harness includes JDBC metadata
+sweeps, persona query corpora, and a gateway-vs-direct Exasol benchmark. It is
+the preferred regression path after metadata compatibility or SQL preprocessor
+changes.
+
 The repository SHALL provide a repeatable compatibility harness for the read-only PostgreSQL gateway. The harness SHALL report which JDBC metadata calls and PostgreSQL-flavored `SELECT` queries succeed, fail, or degrade for realistic client personas without assuming full PostgreSQL compatibility. The repository SHALL also provide a repeatable latency benchmark that compares gateway query execution against direct Exasol JDBC for logically equivalent read-only queries.
 
 ## Background

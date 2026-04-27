@@ -1,5 +1,10 @@
 # Feature: Service Runtime
 
+Status as of 2026-04-27: implemented as a Linux binary plus TOML config and
+systemd unit template. Current deployment guidance installs the binary under
+`/opt/exa-postgres-interface/bin` and config under
+`/etc/exa-postgres-interface/config.toml`.
+
 The prototype SHOULD be installable as a long-running server process on Linux. The preferred operating model is a binary managed by systemd with external configuration and observable logs.
 
 ## Background

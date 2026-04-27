@@ -1,5 +1,11 @@
 # Plan: Add Read-Only PostgreSQL Interface
 
+Status as of 2026-04-27: implemented. The active gateway is a Rust/`pgwire`
+binary, SQL translation runs inside Exasol through
+`PG_DEMO.PG_SQL_PREPROCESSOR`, and PostgreSQL metadata compatibility is now
+provided by Exasol-side `PG_CATALOG` and `INFORMATION_SCHEMA` schemas. The
+systemd deployment path is documented in `README.md`.
+
 ## Objective
 
 Build the first useful prototype path for connecting PostgreSQL-compatible client tools to Exasol through this server.

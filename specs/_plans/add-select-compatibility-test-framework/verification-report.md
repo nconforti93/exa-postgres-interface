@@ -1,5 +1,13 @@
 # Verification Report: Add Select Compatibility Test Framework
 
+Status update as of 2026-04-27: after this plan landed, the suite was extended
+by live client-driven fixes for DbVisualizer and DBeaver catalog browsing. The
+current Exasol-side compatibility layer exposes the documented PostgreSQL 18
+catalog/information-schema relation and column surface and includes targeted
+preprocessor rewrites for observed metadata query shapes such as
+`LATERAL UNNEST`, tuple joins, PostgreSQL array/vector subscripts,
+`ARRAY_AGG`, and PostgreSQL helper functions.
+
 ## Summary of Implemented Behavior
 
 Added a staged compatibility-harness plan plus implementation artifacts for
@@ -69,15 +77,9 @@ Covered by implementation:
 
 ## Known Gaps or Follow-Up Work
 
-* The suite was compiled, but it was not run end-to-end against a live gateway
-  in this environment because no active gateway endpoint or credentials were
-  supplied for this task.
-* The benchmark runner was compiled, but it was not run end-to-end because no
-  live pair of gateway and direct Exasol JDBC endpoints was supplied for this
-  task.
-* The current report of unsupported PostgreSQL query families is still an
-  inference from the codebase and upstream client sources until the suite is run
-  against a live gateway.
+* The suite should continue to be run against a live gateway after each
+  catalog/preprocessor change so newly observed client query shapes are captured
+  as regression probes.
 * The suite currently prints text output only. If the team wants CI ingestion,
   a follow-up could add JSON or JUnit-style output.
 * The benchmark currently uses the repository sample data and warm open

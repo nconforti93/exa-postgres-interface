@@ -5,6 +5,17 @@ PostgreSQL gateway. The goal is not only to keep a smoke test green, but to
 show which JDBC metadata calls and PostgreSQL-flavored `SELECT` queries work,
 which fail, and which fail only for specific client personas.
 
+Current status:
+
+* The suite is intended to be run against a deployed gateway with the
+  Exasol-side `PG_CATALOG`, `INFORMATION_SCHEMA`, and
+  `PG_DEMO.PG_SQL_PREPROCESSOR` objects installed.
+* The current compatibility layer has been iterated against real DbVisualizer
+  and DBeaver metadata-browser failures observed in `SYS.EXA_DBA_AUDIT_SQL`.
+* Metadata coverage now includes the documented PostgreSQL 18 catalog and
+  information-schema relation/column surface, with unsupported PostgreSQL-only
+  features represented by empty or `NULL`-filled compatibility views.
+
 ## What It Covers
 
 The framework has three layers:
@@ -28,6 +39,16 @@ Current personas:
 * `dbeaver`: direct `pg_catalog` schema browser queries.
 * `analyst`: PostgreSQL-flavored read-only stress queries that may expose
   translation or semantic gaps.
+
+Recent client-driven compatibility fixes covered:
+
+* PostgreSQL helper functions such as `format_type`, `pg_get_constraintdef`,
+  `pg_get_expr`, `pg_get_viewdef`, `to_regclass`, and `oidvectortypes`.
+* DbVisualizer metadata queries using `ARRAY_AGG`, tuple joins,
+  `LATERAL UNNEST`, PostgreSQL vector subscripts, and `pg_foreign_server`
+  aliases that conflict with Exasol parsing.
+* DBeaver PostgreSQL plugin catalog probes for system views and helper
+  functions outside the documented base catalog tables.
 
 ## Upstream Research Inputs
 
@@ -55,7 +76,7 @@ Relevant behaviors observed from those sources:
 
 ## Run It
 
-Start the gateway first, then run:
+Install the Exasol-side compatibility SQL, start the gateway, then run:
 
 ```bash
 scripts/run_jdbc_compatibility_suite.sh \
@@ -157,11 +178,11 @@ The suite is designed to confirm these, not assume them, but the current code
 and upstream client behavior suggest that these PostgreSQL features are
 especially important to watch:
 
-* Rich metadata methods beyond `getCatalogs`, `getSchemas`, `getTables`, and
-  `getColumns`.
+* Rich metadata methods beyond the paths already covered by DbVisualizer,
+  DBeaver, pgJDBC, and the existing smoke tests.
 * Queries that depend on PostgreSQL catalog helper functions such as
-  `pg_get_expr`, `pg_get_constraintdef`, or other `pg_catalog` helpers used by
-  DBeaver and pgJDBC.
+  `pg_get_expr`, `pg_get_constraintdef`, or other `pg_catalog` helpers in
+  shapes not yet observed from real clients.
 * PostgreSQL-specific `SELECT` features such as `DISTINCT ON`, `FILTER`,
   arrays, JSON builders, and other constructs that may not translate cleanly to
   Exasol through the current SQL preprocessor path.

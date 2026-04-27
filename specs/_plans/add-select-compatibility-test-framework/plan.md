@@ -1,5 +1,10 @@
 # Plan: Add Select Compatibility Test Framework
 
+Status as of 2026-04-27: implemented. The repository includes JDBC smoke tests,
+a broader JDBC compatibility suite, and a gateway-vs-direct Exasol benchmark.
+The suite should be run against a deployed gateway whenever catalog or
+preprocessor compatibility changes.
+
 ## Objective
 
 Build a reusable compatibility test framework for the read-only PostgreSQL gateway so the team can answer three questions with one run:

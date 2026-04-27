@@ -1,10 +1,10 @@
 # Mission: exa-postgres-interface
 
-Last updated: 2026-04-23
+Last updated: 2026-04-27
 
 ## Project Identity and Summary
 
-`exa-postgres-interface` is a prototype PostgreSQL wire-protocol server for Exasol. It is intended to run as an add-on process between PostgreSQL-compatible client tools and an Exasol database, allowing tools that already support PostgreSQL to connect to Exasol even when they do not provide a native Exasol connector.
+`exa-postgres-interface` is a PostgreSQL wire-protocol gateway for Exasol. It is intended to run as an add-on Linux service between PostgreSQL-compatible client tools and an Exasol database, allowing tools that already support PostgreSQL to connect to Exasol even when they do not provide a native Exasol connector.
 
 ## Problem Statement
 
@@ -16,11 +16,12 @@ The prototype MUST preserve Exasol as the actual database system. It SHALL NOT m
 
 Primary users are Exasol customers who want to connect existing PostgreSQL-capable tools to Exasol.
 
-Initial target workflow:
+Current target workflow:
 
 * An Exasol customer installs and runs this application on a Linux machine.
+* The Exasol-side PostgreSQL compatibility SQL is installed in the database.
 * The application listens for PostgreSQL wire-protocol client connections.
-* A PostgreSQL-capable client, initially DbVisualizer, connects to the application as if it were connecting to PostgreSQL.
+* PostgreSQL-capable clients such as DbVisualizer, DBeaver, `psql`, and JDBC-based tools connect to the application as if it were connecting to PostgreSQL.
 * The application authenticates to Exasol, initializes the Exasol session, and forwards or translates client activity so the user can reach Exasol.
 
 Future target workflow:
@@ -29,7 +30,7 @@ Future target workflow:
 
 ## Core Capabilities
 
-The prototype SHOULD establish the smallest useful PostgreSQL-compatible path from DbVisualizer to Exasol:
+The prototype SHOULD establish a useful PostgreSQL-compatible path from common PostgreSQL clients to Exasol:
 
 * Accept PostgreSQL wire-protocol connections from standard PostgreSQL clients.
 * Support username/password authentication first.
@@ -38,6 +39,8 @@ The prototype SHOULD establish the smallest useful PostgreSQL-compatible path fr
 * Use a Python preprocessor based on `sqlglot` to convert SQL from PostgreSQL dialect to Exasol dialect.
 * Return query results, metadata, errors, and connection state in forms PostgreSQL clients can consume.
 * Make unsupported protocol, SQL, authentication, or metadata behavior explicit.
+* Expose broad PostgreSQL metadata compatibility through Exasol-side `PG_CATALOG` and `INFORMATION_SCHEMA` schemas.
+* Run as a systemd-managed Linux service.
 
 Longer-term capabilities SHOULD include broader PostgreSQL protocol compatibility and additional Exasol authentication types.
 
@@ -46,11 +49,11 @@ Longer-term capabilities SHOULD include broader PostgreSQL protocol compatibilit
 The prototype SHALL NOT include:
 
 * Changes to Exasol database engine behavior.
-* Server-side Exasol modifications beyond normal session setup and use of a Python preprocessor script.
+* Server-side Exasol engine modifications beyond normal SQL objects, session setup, and use of a Python preprocessor script.
 * Sidecar packaging or integration into Exasol deployment topology.
 * A guarantee that arbitrary PostgreSQL applications work unchanged.
 * Full coverage of every PostgreSQL SQL construct, system catalog, extension, or behavior.
-* Production hardening beyond what is necessary to evaluate the prototype safely.
+* Production hardening beyond what is necessary to evaluate the service safely.
 
 ## Domain Glossary
 
@@ -59,6 +62,7 @@ The prototype SHALL NOT include:
 * Protocol server: The application built by this repository; it accepts PostgreSQL wire-protocol connections.
 * Exasol session: A database session opened by the protocol server against Exasol on behalf of a client connection.
 * Python preprocessor: An Exasol-side preprocessor script that transforms incoming SQL before execution.
+* Metadata compatibility layer: Exasol-side `PG_CATALOG` and `INFORMATION_SCHEMA` schemas containing PostgreSQL-shaped views and helper functions backed by Exasol system metadata where possible.
 * SQL dialect translation: Conversion of PostgreSQL-flavored SQL to Exasol-flavored SQL, expected to use `sqlglot`.
 * Add-on process: A separately installed application that runs between client tools and Exasol without modifying the database engine.
 
@@ -75,10 +79,9 @@ Current implementation stack:
 
 Open decisions:
 
-* Broader PostgreSQL metadata and system catalog compatibility.
 * Prepared statement parameter translation and type handling.
 * Exasol-backed transaction semantics.
-* Longer-term packaging format beyond a release binary plus systemd unit.
+* GitHub release automation and binary distribution format.
 
 ## Build, Test, Lint, and Format Commands
 
@@ -93,7 +96,7 @@ cargo build --release
 Integration verification also uses:
 
 ```bash
-exapump sql --profile nc-personal-2 "SELECT 1"
+python3 scripts/exasol_exec.py --dsn EXASOL_HOST:8563 --user sys --password 'EXASOL_PASSWORD' --sql "SELECT 1"
 ```
 
 ## Project Structure
@@ -102,9 +105,14 @@ Current structure:
 
 ```text
 .
-|-- .codex/
-`-- specs/
-    `-- mission.md
+|-- config/
+|-- docs/
+|-- packaging/
+|-- scripts/
+|-- specs/
+|-- sql/
+|-- src/
+`-- tests/
 ```
 
 Expected future structure SHOULD keep permanent Speq specs under `specs/<domain>/<feature>/spec.md` and staged work under `specs/_plans/<plan-name>/`.
@@ -121,13 +129,17 @@ Target prototype data flow:
 6. The protocol server routes requests to Exasol, maps responses back to PostgreSQL-compatible protocol messages, and returns them to the client.
 7. The protocol server closes or cleans up Exasol session state when the client disconnects.
 
-The first implementation plan SHOULD define the smallest subset of this flow needed for a DbVisualizer connection smoke test.
+The implementation has moved beyond the first smoke test: it includes
+Exasol-side PostgreSQL catalog compatibility, systemd deployment guidance,
+DbVisualizer/DBeaver metadata fixes, JDBC compatibility tests, and performance
+benchmark tooling.
 
 ## Constraints
 
-* This project is a prototype; implementation choices SHOULD optimize for learning and demonstrable connectivity before production completeness.
+* This project remains prototype-stage; implementation choices SHOULD optimize for learning, demonstrable connectivity, and clear compatibility boundaries before production completeness.
 * PostgreSQL protocol compatibility is the desired direction, but compatibility boundaries MUST be documented as the prototype discovers unsupported behavior.
 * Exasol remains the source of truth for database execution and behavior.
+* PostgreSQL metadata compatibility SHOULD live in Exasol-side views/functions where practical, not in ad hoc gateway-side query matching.
 * The protocol server SHALL NOT silently emulate or alter database semantics in ways that hide meaningful Exasol/PostgreSQL differences.
 * Session initialization MUST make the SQL preprocessor behavior explicit and observable enough to debug.
 * Specs SHOULD be written before substantial behavior is implemented.
@@ -145,6 +157,7 @@ Likely dependency categories:
 * DbVisualizer for the initial manual smoke test.
 * Exasol Personal for integration testing.
 * Linux packaging and process supervision tools, once packaging is planned.
+* GitHub Releases or an equivalent artifact pipeline for distributing a Linux binary.
 
 ## Assumptions and Open Decisions
 
@@ -157,10 +170,17 @@ Confirmed mission facts:
 * Broader Exasol authentication support is desirable later.
 * The project is a prototype.
 
-Open decisions before implementation:
+Resolved implementation decisions:
 
-* Which server runtime and PostgreSQL protocol library to use.
-* Which minimum PostgreSQL protocol messages DbVisualizer requires for first connection.
-* Which SQL and metadata requests DbVisualizer sends during initial connect and browse.
-* How to install and activate the Exasol Python preprocessor script automatically per session.
-* Which Exasol Personal test setup will be used for repeatable integration tests.
+* The active implementation is a Rust binary using `pgwire`.
+* SQL translation runs inside Exasol through `PG_DEMO.PG_SQL_PREPROCESSOR`.
+* PostgreSQL catalog compatibility is implemented through Exasol-side
+  `PG_CATALOG` and `INFORMATION_SCHEMA` schemas.
+* Linux operation uses a systemd unit and TOML config.
+
+Open decisions:
+
+* How to package and publish release binaries.
+* How much PostgreSQL write/transaction behavior, if any, should be supported.
+* Which additional PostgreSQL clients should become formal compatibility
+  targets.

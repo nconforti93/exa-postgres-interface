@@ -1,5 +1,10 @@
 # Feature: Exasol Sample Data for Smoke Testing
 
+Status as of 2026-04-27: implemented and expanded. The sample data now creates
+a richer demo environment with multiple users, roles, nested role grants,
+schemas, tables, views, functions, scripts, constraints, and cross-schema
+dependencies for metadata-browser validation.
+
 The prototype SHALL include a repeatable way to create sample Exasol data for read-only client smoke tests and SQL translation validation. Sample data SHALL support both trivial connectivity checks and a PostgreSQL-to-Exasol conversion demo.
 
 ## Background

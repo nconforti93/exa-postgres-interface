@@ -1,5 +1,11 @@
 # Implementation Notes
 
+Status as of 2026-04-27: the Rust/`pgwire` implementation remains the active
+gateway. PostgreSQL metadata compatibility has since moved into Exasol-side
+`PG_CATALOG` and `INFORMATION_SCHEMA` schemas, with
+`PG_DEMO.PG_SQL_PREPROCESSOR` handling PostgreSQL dialect and metadata-query
+rewrites inside Exasol.
+
 ## Runtime Selection
 
 The active prototype uses Rust 1.89 and the `pgwire` crate.
@@ -19,9 +25,11 @@ Reasons:
 
 Tradeoffs:
 
-* PostgreSQL system catalog compatibility remains future work.
-* Prepared statement parameters are rejected for now, although Extended Query
-  parse/bind/execute without parameters reaches the same execution path.
+* PostgreSQL system catalog compatibility is now broad enough to expose the
+  documented PostgreSQL 18 relation and column surface, but PostgreSQL-only
+  engine features still return empty or `NULL` compatibility metadata.
+* Prepared statement parameter support is intentionally limited; binary
+  prepared statement parameters remain unsupported.
 * Common transaction wrappers are acknowledged locally for client compatibility,
   but real Exasol-backed transaction semantics are not implemented.
 
@@ -41,6 +49,11 @@ The implementation separates:
 The execution result model distinguishes row-returning query results from
 command-completion results so future write support can add DML/DDL behavior
 without replacing the protocol response path.
+
+Operationally, the preferred deployment shape is now a release binary installed
+under `/opt/exa-postgres-interface/bin`, a TOML config under
+`/etc/exa-postgres-interface`, and the provided systemd unit in
+`packaging/exa-postgres-interface.service`.
 
 ## PostgreSQL Protocol Reference
 
